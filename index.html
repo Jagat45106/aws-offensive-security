@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AWS Offensive Security — Advanced Red Team Curriculum</title>
+<meta name="description" content="Master AWS cloud attack techniques across 21 modules and 95+ hands-on labs. From S3 enumeration to full kill-chain capstone.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1f916;</text></svg>">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+--bg:#0a0e1a;--bg-card:rgba(15,20,40,0.85);--bg-card-solid:#0f1428;
+--cyan:#00f0ff;--magenta:#ff00aa;--green:#00ff88;--orange:#ff8800;--red:#ff0055;--blue:#00b4ff;
+--text:#e0e6f0;--text-dim:#7a8ba8;--text-bright:#ffffff;
+--tier-beginner:#00ff88;--tier-intermediate:#00b4ff;--tier-expert:#ff8800;--tier-mahaguru:#ff0055;
+--border:rgba(0,240,255,0.12);--radius:12px;--radius-sm:8px;
+--font-sans:'Segoe UI',system-ui,-apple-system,sans-serif;
+--font-mono:'SF Mono','Cascadia Code','Fira Code',monospace;
+}
+html{scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:var(--cyan) var(--bg)}
+body{font-family:var(--font-sans);background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--cyan);border-radius:4px}
+a{color:var(--cyan);text-decoration:none;transition:color .2s}
+a:hover{color:var(--magenta)}
+
+/* ========== HERO ========== */
+.hero{position:relative;min-height:auto;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;text-align:center;padding:3rem 2rem 4rem;overflow:hidden}
+/* ========== SHAPE LANDING HERO BG ========== */
+#shapeBg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.shape-tint{position:absolute;inset:0;background:linear-gradient(135deg,rgba(0,240,255,0.04) 0%,transparent 50%,rgba(255,0,170,0.04) 100%);filter:blur(80px)}
+.shape-fade{position:absolute;inset:0;background:linear-gradient(to bottom,rgba(10,14,26,0.72) 0%,transparent 22%,transparent 72%,rgba(10,14,26,1) 100%);pointer-events:none}
+.elegant-shape{position:absolute}
+.elegant-shape-inner{border-radius:9999px;backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);border:2px solid rgba(255,255,255,0.12);position:relative}
+.elegant-shape-inner::after{content:'';position:absolute;inset:0;border-radius:9999px;background:radial-gradient(circle at 50% 50%,rgba(255,255,255,0.18),transparent 70%)}
+@keyframes shapeEntry{from{opacity:0;transform:translateY(-150px) rotate(calc(var(--rot) - 15deg))}to{opacity:1;transform:translateY(0) rotate(var(--rot))}}
+@keyframes shapeFloat{0%,100%{transform:translateY(0) rotate(var(--rot))}50%{transform:translateY(15px) rotate(var(--rot))}}
+.elegant-shape{animation:shapeEntry 2.4s cubic-bezier(0.23,0.86,0.39,0.96) var(--ed,0s) both,shapeFloat var(--fd,12s) ease-in-out var(--fs,2.7s) infinite}
+.es-1{left:-10%;top:20%;--rot:12deg;--ed:0.3s;--fs:2.7s}
+.es-1 .elegant-shape-inner{background:linear-gradient(to right,rgba(0,240,255,0.15),transparent);box-shadow:0 8px 32px rgba(0,240,255,0.12)}
+.es-2{right:-5%;top:75%;--rot:-15deg;--ed:0.5s;--fs:2.9s;--fd:13s}
+.es-2 .elegant-shape-inner{background:linear-gradient(to right,rgba(255,0,170,0.15),transparent);box-shadow:0 8px 32px rgba(255,0,170,0.12)}
+.es-3{left:10%;bottom:10%;--rot:-8deg;--ed:0.4s;--fs:2.8s;--fd:11s}
+.es-3 .elegant-shape-inner{background:linear-gradient(to right,rgba(0,255,136,0.15),transparent);box-shadow:0 8px 32px rgba(0,255,136,0.12)}
+.es-4{right:20%;top:15%;--rot:20deg;--ed:0.6s;--fs:3.0s;--fd:9s}
+.es-4 .elegant-shape-inner{background:linear-gradient(to right,rgba(255,136,0,0.15),transparent);box-shadow:0 8px 32px rgba(255,136,0,0.12)}
+.es-5{left:25%;top:10%;--rot:-25deg;--ed:0.7s;--fs:3.1s;--fd:10s}
+.es-5 .elegant-shape-inner{background:linear-gradient(to right,rgba(0,240,255,0.12),transparent);box-shadow:0 8px 32px rgba(0,240,255,0.1)}
+/* Ambient glow orbs */
+.hero-glow{position:fixed;width:600px;height:600px;border-radius:50%;filter:blur(120px);opacity:.12;z-index:1;pointer-events:none}
+.hero-glow-1{background:var(--cyan);top:-200px;left:-100px;animation:glowDrift1 12s ease-in-out infinite alternate}
+.hero-glow-2{background:var(--magenta);bottom:-200px;right:-100px;animation:glowDrift2 14s ease-in-out infinite alternate}
+@keyframes glowDrift1{0%{transform:translate(0,0)}100%{transform:translate(100px,80px)}}
+@keyframes glowDrift2{0%{transform:translate(0,0)}100%{transform:translate(-80px,-60px)}}
+.hero-content{position:relative;z-index:1;max-width:900px}
+.hero h1{font-size:clamp(2rem,5vw,3.5rem);font-weight:800;letter-spacing:-1px;background:linear-gradient(135deg,var(--cyan),var(--magenta));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:.5rem}
+.hero .subtitle{font-size:clamp(1rem,2.5vw,1.35rem);color:var(--text-dim);margin-bottom:2rem;max-width:700px;margin-left:auto;margin-right:auto}
+.hero-stats{display:flex;gap:1.5rem;justify-content:center;flex-wrap:wrap;margin-top:1.5rem}
+.hero-stat{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.5rem;min-width:140px;backdrop-filter:blur(12px)}
+.hero-stat .num{font-size:2rem;font-weight:800;display:block}
+.hero-stat .label{font-size:.8rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px}
+
+/* Robot SVG */
+.robot-wrap{margin-bottom:2rem;animation:robotFloat 4s ease-in-out infinite}
+@keyframes robotFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+.robot-wrap svg{width:140px;height:140px;filter:drop-shadow(0 0 20px rgba(0,240,255,.4))}
+
+/* ========== DECORATIVE ROBOTS ========== */
+#robots-deco{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.deco-robot{position:absolute;opacity:0.2}
+.deco-robot-1{left:1.5vw;top:32vh;animation:robotFloat 4.2s ease-in-out infinite}
+.deco-robot-2{right:1.5vw;top:18vh;animation:robotFloat 3.8s 1s ease-in-out infinite}
+.deco-robot-3{left:1.5vw;top:64vh;animation:robotFloat 4.5s 2s ease-in-out infinite}
+.deco-robot-4{right:1.5vw;top:58vh;animation:robotFloat 3.6s 0.5s ease-in-out infinite}
+@media(max-width:960px){#robots-deco{display:none}}
+
+/* ========== SEARCH SECTION ========== */
+.search-section{padding:2rem 0;background:linear-gradient(180deg,rgba(0,240,255,0.03) 0%,transparent 100%);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.search-section-inner{max-width:700px;margin:0 auto;padding:0 1.25rem;text-align:center}
+.search-section-label{font-size:.8rem;text-transform:uppercase;letter-spacing:2px;color:var(--text-dim);margin-bottom:1rem;display:block}
+.search-wrap{position:relative;max-width:700px;margin:0 auto}
+.search-wrap input{width:100%;padding:1rem 1.2rem 1rem 3.2rem;background:var(--bg-card);border:1px solid rgba(0,240,255,0.25);border-radius:var(--radius);color:var(--text);font-size:1.05rem;outline:none;transition:border-color .3s,box-shadow .3s;font-family:var(--font-sans)}
+.search-wrap input::placeholder{color:var(--text-dim)}
+.search-wrap input:focus{border-color:var(--cyan);box-shadow:0 0 30px rgba(0,240,255,.18)}
+.search-wrap i.search-icon{position:absolute;left:1.1rem;top:50%;transform:translateY(-50%);color:var(--cyan);font-size:1rem;pointer-events:none}
+.search-clear{position:absolute;right:1rem;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:.9rem;padding:.2rem;display:none}
+.search-clear.visible{display:block}
+.search-hint{margin-top:.75rem;font-size:.78rem;color:var(--text-dim)}
+
+/* ========== TIER TABS ========== */
+.tier-nav{position:sticky;top:0;z-index:100;background:rgba(10,14,26,.92);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);padding:.6rem 1rem;display:flex;justify-content:center;gap:.5rem;flex-wrap:wrap}
+.tier-tab{padding:.55rem 1.3rem;border-radius:var(--radius-sm);border:1px solid transparent;cursor:pointer;font-size:.85rem;font-weight:600;transition:all .3s;background:transparent;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+.tier-tab:hover,.tier-tab.active{color:var(--text-bright)}
+.tier-tab[data-tier="beginner"]:hover,.tier-tab[data-tier="beginner"].active{border-color:var(--tier-beginner);box-shadow:0 0 16px rgba(0,255,136,.2);color:var(--tier-beginner)}
+.tier-tab[data-tier="intermediate"]:hover,.tier-tab[data-tier="intermediate"].active{border-color:var(--tier-intermediate);box-shadow:0 0 16px rgba(0,180,255,.2);color:var(--tier-intermediate)}
+.tier-tab[data-tier="expert"]:hover,.tier-tab[data-tier="expert"].active{border-color:var(--tier-expert);box-shadow:0 0 16px rgba(255,136,0,.2);color:var(--tier-expert)}
+.tier-tab[data-tier="mahaguru"]:hover,.tier-tab[data-tier="mahaguru"].active{border-color:var(--tier-mahaguru);box-shadow:0 0 16px rgba(255,0,85,.2);color:var(--tier-mahaguru)}
+
+/* ========== SECTIONS ========== */
+.container{max-width:1400px;margin:0 auto;padding:0 2rem}
+.tier-section{padding:3rem 0 2rem}
+.tier-header{display:flex;align-items:center;gap:1.1rem;margin-bottom:1.75rem}
+.tier-badge{display:inline-flex;align-items:center;gap:.45rem;padding:.4rem 1rem;border-radius:20px;font-size:.82rem;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+.tier-badge.beginner{background:rgba(0,255,136,.12);color:var(--tier-beginner);border:1px solid rgba(0,255,136,.25)}
+.tier-badge.intermediate{background:rgba(0,180,255,.12);color:var(--tier-intermediate);border:1px solid rgba(0,180,255,.25)}
+.tier-badge.expert{background:rgba(255,136,0,.12);color:var(--tier-expert);border:1px solid rgba(255,136,0,.25)}
+.tier-badge.mahaguru{background:rgba(255,0,85,.12);color:var(--tier-mahaguru);border:1px solid rgba(255,0,85,.25)}
+.tier-title{font-size:1.9rem;font-weight:700;color:var(--text-bright)}
+
+/* ========== MODULE CARDS ========== */
+.module-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:1rem;backdrop-filter:blur(12px);transition:box-shadow .4s,border-color .4s,transform .2s;overflow:hidden}
+.module-card:hover{transform:translateY(-2px)}
+.module-card.beginner:hover{box-shadow:0 0 30px rgba(0,255,136,.15);border-color:rgba(0,255,136,.3)}
+.module-card.intermediate:hover{box-shadow:0 0 30px rgba(0,180,255,.15);border-color:rgba(0,180,255,.3)}
+.module-card.expert:hover{box-shadow:0 0 30px rgba(255,136,0,.15);border-color:rgba(255,136,0,.3)}
+.module-card.mahaguru:hover{box-shadow:0 0 30px rgba(255,0,85,.15);border-color:rgba(255,0,85,.3)}
+.module-header{display:flex;align-items:center;gap:1.25rem;padding:1.35rem 1.6rem;cursor:pointer;user-select:none}
+.module-num{font-family:var(--font-mono);font-size:.92rem;font-weight:700;min-width:52px;text-align:center;padding:.3rem .6rem;border-radius:8px}
+.beginner .module-num{background:rgba(0,255,136,.12);color:var(--tier-beginner)}
+.intermediate .module-num{background:rgba(0,180,255,.12);color:var(--tier-intermediate)}
+.expert .module-num{background:rgba(255,136,0,.12);color:var(--tier-expert)}
+.mahaguru .module-num{background:rgba(255,0,85,.12);color:var(--tier-mahaguru)}
+.module-info{flex:1;min-width:0}
+.module-title{font-size:1.2rem;font-weight:700;color:var(--text-bright);line-height:1.3}
+.module-meta{display:flex;gap:1.1rem;margin-top:.35rem;font-size:.88rem;color:var(--text-dim)}
+.module-meta span{display:flex;align-items:center;gap:.35rem}
+.module-progress{width:100px;height:7px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden;margin-left:auto;flex-shrink:0}
+.module-progress-fill{height:100%;border-radius:4px;transition:width .4s}
+.beginner .module-progress-fill{background:var(--tier-beginner)}
+.intermediate .module-progress-fill{background:var(--tier-intermediate)}
+.expert .module-progress-fill{background:var(--tier-expert)}
+.mahaguru .module-progress-fill{background:var(--tier-mahaguru)}
+.module-toggle{color:var(--text-dim);transition:transform .3s;flex-shrink:0;font-size:.9rem}
+.module-card.open .module-toggle{transform:rotate(180deg)}
+.module-body{max-height:0;overflow:hidden;transition:max-height .4s ease}
+.module-body-inner{padding:0 1.3rem 1.3rem}
+.lab-list{list-style:none;margin-top:.5rem}
+.lab-item{display:flex;align-items:flex-start;gap:.7rem;padding:.55rem 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:.9rem}
+.lab-item:last-child{border-bottom:none}
+.lab-check{appearance:none;width:18px;height:18px;border:2px solid var(--text-dim);border-radius:4px;cursor:pointer;flex-shrink:0;margin-top:2px;position:relative;transition:all .2s}
+.lab-check:checked{border-color:var(--green);background:var(--green)}
+.lab-check:checked::after{content:'';position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--bg);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.lab-text{font-family:var(--font-mono);font-size:.82rem;color:var(--text);line-height:1.5}
+.module-footer{display:flex;flex-wrap:wrap;gap:.8rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid rgba(255,255,255,.06)}
+.module-footer-section h4{font-size:.7rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.4rem}
+.tool-tag{display:inline-block;font-family:var(--font-mono);font-size:.72rem;padding:.2rem .55rem;background:rgba(0,240,255,.08);border:1px solid rgba(0,240,255,.15);border-radius:4px;color:var(--cyan);margin:.15rem .2rem .15rem 0}
+.rw-tag{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--magenta);background:rgba(255,0,170,.08);border:1px solid rgba(255,0,170,.12);padding:.3rem .6rem;border-radius:6px;margin-top:.3rem}
+.rw-tag i{font-size:.7rem}
+
+/* ========== MITRE & TOOLS SECTIONS ========== */
+.section-title{font-size:1.8rem;font-weight:800;text-align:center;margin-bottom:.5rem;color:var(--text-bright)}
+.section-sub{text-align:center;color:var(--text-dim);margin-bottom:2rem;font-size:.95rem}
+.mitre-grid,.tools-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-bottom:3rem}
+.mitre-card,.tool-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem;transition:box-shadow .3s,border-color .3s}
+.mitre-card:hover{box-shadow:0 0 20px rgba(0,240,255,.1);border-color:rgba(0,240,255,.25)}
+.tool-card:hover{box-shadow:0 0 20px rgba(255,0,170,.1);border-color:rgba(255,0,170,.25)}
+.mitre-card h3{font-size:.95rem;color:var(--cyan);margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem}
+.mitre-card p{font-size:.82rem;color:var(--text-dim);line-height:1.5}
+.tool-card h3{font-size:.95rem;color:var(--magenta);margin-bottom:.3rem}
+.tool-card p{font-size:.82rem;color:var(--text-dim);line-height:1.5}
+
+/* ========== OVERVIEW STATS ========== */
+.overview{padding:3rem 0}
+.overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}
+.overview-card{background:var(--bg-card);border-radius:var(--radius);padding:1.5rem;border:1px solid var(--border);text-align:center;transition:box-shadow .4s,border-color .4s,transform .3s}
+.overview-card:hover{transform:translateY(-4px)}
+.overview-card:nth-child(1):hover{box-shadow:0 0 30px rgba(0,255,136,.18);border-color:rgba(0,255,136,.3)}
+.overview-card:nth-child(2):hover{box-shadow:0 0 30px rgba(0,180,255,.18);border-color:rgba(0,180,255,.3)}
+.overview-card:nth-child(3):hover{box-shadow:0 0 30px rgba(255,136,0,.18);border-color:rgba(255,136,0,.3)}
+.overview-card:nth-child(4):hover{box-shadow:0 0 30px rgba(255,0,85,.18);border-color:rgba(255,0,85,.3)}
+.overview-card .ov-icon{font-size:2rem;margin-bottom:.5rem}
+.overview-card h3{font-size:1.1rem;font-weight:700;color:var(--text-bright);margin-bottom:.25rem}
+.overview-card p{font-size:.82rem;color:var(--text-dim)}
+
+/* ========== SCROLL TO TOP ========== */
+.scroll-top{position:fixed;bottom:2rem;right:2rem;width:44px;height:44px;border-radius:50%;background:var(--bg-card);border:1px solid var(--cyan);color:var(--cyan);font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s,box-shadow .3s,transform .3s;z-index:99;backdrop-filter:blur(8px)}
+.scroll-top.visible{opacity:1;pointer-events:auto}
+.scroll-top:hover{box-shadow:0 0 20px rgba(0,240,255,.3);transform:scale(1.1)}
+
+/* ========== FOOTER ========== */
+footer{border-top:1px solid var(--border);padding:2.5rem 1rem;text-align:center;color:var(--text-dim);font-size:.85rem}
+footer .footer-brand{font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,var(--cyan),var(--magenta));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:.5rem}
+footer p{margin:.2rem 0}
+
+/* ========== LAB WALKTHROUGH ========== */
+.lab-content{flex:1;min-width:0}
+.lab-expand-btn{display:inline-flex;align-items:center;gap:.4rem;margin-top:.4rem;padding:.3rem .7rem;background:rgba(0,240,255,.06);border:1px solid rgba(0,240,255,.15);border-radius:6px;color:var(--cyan);font-size:.72rem;cursor:pointer;transition:all .3s;font-family:var(--font-sans)}
+.lab-expand-btn:hover{background:rgba(0,240,255,.12);box-shadow:0 0 12px rgba(0,240,255,.15)}
+.lab-expand-btn .lab-arrow{transition:transform .3s;font-size:.6rem}
+.lab-expand-btn.open .lab-arrow{transform:rotate(180deg)}
+.lab-walkthrough{max-height:0;overflow:hidden;transition:max-height .5s ease}
+.lab-walkthrough.open{max-height:none;overflow:visible}
+.lab-walkthrough-content{padding:1rem 0}
+.lab-objective{background:rgba(0,240,255,.05);border-left:3px solid var(--cyan);padding:.8rem 1rem;border-radius:0 var(--radius-sm) var(--radius-sm) 0;margin-bottom:1rem;font-size:.85rem;line-height:1.6}
+.lab-objective strong{color:var(--cyan)}
+.lab-steps{display:flex;flex-direction:column;gap:.8rem}
+.lab-step{display:flex;gap:.8rem;align-items:flex-start}
+.step-num{min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(0,240,255,.1);border:1px solid rgba(0,240,255,.25);color:var(--cyan);font-size:.75rem;font-weight:700;flex-shrink:0;margin-top:2px}
+.step-content{flex:1;min-width:0}
+.step-desc{font-size:.84rem;color:var(--text);line-height:1.5;margin-bottom:.5rem}
+.step-desc code{background:rgba(0,240,255,.08);padding:.1rem .4rem;border-radius:3px;font-family:var(--font-mono);font-size:.78rem;color:var(--cyan)}
+.terminal{border-radius:var(--radius-sm);overflow:hidden;margin:.4rem 0;border:1px solid rgba(255,255,255,.08);background:#0c1021}
+.terminal-header{display:flex;align-items:center;gap:6px;padding:.4rem .8rem;background:rgba(255,255,255,.04);border-bottom:1px solid rgba(255,255,255,.06);font-size:.7rem;color:var(--text-dim)}
+.terminal-header .dot{width:10px;height:10px;border-radius:50%}
+.terminal-header .dot.red{background:#ff5f57}
+.terminal-header .dot.yellow{background:#febc2e}
+.terminal-header .dot.green{background:#28c840}
+.terminal-body{padding:.6rem .8rem;font-family:var(--font-mono);font-size:.76rem;line-height:1.6;overflow-x:auto}
+.terminal-cmd{color:var(--green);white-space:pre-wrap;word-break:break-all}
+.terminal-output{color:var(--text-dim);white-space:pre-wrap;word-break:break-all;margin:.2rem 0 .4rem}
+.attack-flow{margin:1rem 0;padding:1rem;background:rgba(255,0,170,.04);border:1px solid rgba(255,0,170,.12);border-radius:var(--radius-sm)}
+.flow-title{font-size:.78rem;font-weight:700;color:var(--magenta);margin-bottom:.6rem;display:flex;align-items:center;gap:.4rem}
+.flow-diagram{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;padding:.4rem 0}
+.flow-node{padding:.35rem .7rem;background:rgba(0,240,255,.08);border:1px solid rgba(0,240,255,.2);border-radius:6px;font-size:.74rem;font-family:var(--font-mono);color:var(--text);white-space:nowrap}
+.flow-node.flow-start{border-color:var(--green);color:var(--green)}
+.flow-node.flow-end{border-color:var(--magenta);color:var(--magenta);background:rgba(255,0,170,.08)}
+.flow-arrow{color:var(--text-dim);font-size:.9rem;flex-shrink:0}
+.lab-note{background:rgba(255,136,0,.06);border-left:3px solid var(--orange);padding:.6rem .8rem;border-radius:0 var(--radius-sm) var(--radius-sm) 0;margin-top:.8rem;font-size:.8rem;color:var(--text-dim);line-height:1.5}
+.lab-note i{color:var(--orange);margin-right:.3rem}
+.lab-note code{background:rgba(255,136,0,.1);padding:.1rem .3rem;border-radius:3px;font-family:var(--font-mono);font-size:.75rem;color:var(--orange)}
+.lab-divider{border:none;border-top:1px solid rgba(255,255,255,.06);margin:1.5rem 0}
+.lab-loading{text-align:center;padding:1rem;color:var(--text-dim);font-size:.8rem}
+.lab-loading i{animation:spin 1s linear infinite;margin-right:.4rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ========== NO RESULTS ========== */
+.no-results{text-align:center;padding:3rem;color:var(--text-dim);display:none}
+.no-results i{font-size:2.5rem;margin-bottom:1rem;display:block;color:var(--magenta)}
+
+/* ========== RESPONSIVE ========== */
+@media(max-width:768px){
+.hero-stats{gap:.8rem}
+.hero-stat{min-width:110px;padding:.7rem 1rem}
+.hero-stat .num{font-size:1.5rem}
+.module-header{padding:.9rem 1rem;flex-wrap:wrap}
+.module-progress{width:60px}
+.tier-nav{gap:.3rem;padding:.5rem}
+.tier-tab{padding:.4rem .8rem;font-size:.75rem}
+.mitre-grid,.tools-grid{grid-template-columns:1fr}
+.overview-grid{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:480px){
+.overview-grid{grid-template-columns:1fr}
+.module-meta{flex-direction:column;gap:.2rem}
+}
+</style>
+</head>
+<body>
+
+<!-- ========== SHAPE LANDING HERO BG ========== -->
+<div id="shapeBg" aria-hidden="true">
+<div class="shape-tint"></div>
+<div class="elegant-shape es-1"><div class="elegant-shape-inner" style="width:600px;height:140px"></div></div>
+<div class="elegant-shape es-2"><div class="elegant-shape-inner" style="width:500px;height:120px"></div></div>
+<div class="elegant-shape es-3"><div class="elegant-shape-inner" style="width:300px;height:80px"></div></div>
+<div class="elegant-shape es-4"><div class="elegant-shape-inner" style="width:200px;height:60px"></div></div>
+<div class="elegant-shape es-5"><div class="elegant-shape-inner" style="width:150px;height:40px"></div></div>
+<div class="shape-fade"></div>
+</div>
+<div class="hero-glow hero-glow-1" aria-hidden="true"></div>
+<div class="hero-glow hero-glow-2" aria-hidden="true"></div>
+
+<!-- ==================== HERO ==================== -->
+<section class="hero" id="top">
+<div class="hero-content">
+
+<!-- Agentic Robot SVG with Sword -->
+<div class="robot-wrap">
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<!-- Sword -->
+<g transform="translate(135,30) rotate(35)">
+<rect x="-2" y="0" width="4" height="70" rx="1" fill="url(#swordBlade)"/>
+<rect x="-8" y="68" width="16" height="5" rx="2" fill="#00f0ff"/>
+<rect x="-3" y="73" width="6" height="18" rx="2" fill="#1a2040"/>
+<circle cx="0" cy="95" r="4" fill="#ff00aa"/>
+</g>
+<defs>
+<linearGradient id="swordBlade" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#ffffff"/>
+<stop offset="50%" stop-color="#00f0ff"/>
+<stop offset="100%" stop-color="#00b4ff"/>
+</linearGradient>
+<linearGradient id="bodyGrad" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#1a2848"/>
+<stop offset="100%" stop-color="#0f1428"/>
+</linearGradient>
+<filter id="glow"><feGaussianBlur stdDeviation="2" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<!-- Antenna -->
+<line x1="100" y1="42" x2="100" y2="28" stroke="#00f0ff" stroke-width="2"/>
+<circle cx="100" cy="25" r="4" fill="#00f0ff" filter="url(#glow)"/>
+<!-- Head -->
+<rect x="72" y="44" width="56" height="40" rx="10" fill="url(#bodyGrad)" stroke="#00f0ff" stroke-width="1.5"/>
+<!-- Eyes -->
+<circle cx="88" cy="62" r="7" fill="#0a0e1a"/><circle cx="88" cy="62" r="5" fill="#00f0ff" filter="url(#glow)"/>
+<circle cx="112" cy="62" r="7" fill="#0a0e1a"/><circle cx="112" cy="62" r="5" fill="#ff00aa" filter="url(#glow)"/>
+<!-- Mouth -->
+<rect x="90" y="72" width="20" height="3" rx="1.5" fill="#00ff88" opacity=".7"/>
+<!-- Neck -->
+<rect x="94" y="84" width="12" height="8" rx="3" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<!-- Body -->
+<rect x="65" y="92" width="70" height="52" rx="12" fill="url(#bodyGrad)" stroke="#00f0ff" stroke-width="1.5"/>
+<!-- Chest emblem -->
+<polygon points="100,100 110,112 100,124 90,112" fill="none" stroke="#ff00aa" stroke-width="1.5" filter="url(#glow)"/>
+<circle cx="100" cy="112" r="3" fill="#ff00aa"/>
+<!-- Left Arm -->
+<rect x="42" y="96" width="20" height="12" rx="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1.2"/>
+<rect x="38" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad)" stroke="#00f0ff" stroke-width="1"/>
+<!-- Sword hand (left) -->
+<circle cx="45" cy="136" r="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<!-- Right Arm holding sword -->
+<rect x="138" y="96" width="20" height="12" rx="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1.2"/>
+<rect x="146" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad)" stroke="#00f0ff" stroke-width="1"/>
+<circle cx="153" cy="136" r="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<!-- Legs -->
+<rect x="76" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad)" stroke="#00f0ff" stroke-width="1"/>
+<rect x="106" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad)" stroke="#00f0ff" stroke-width="1"/>
+<!-- Feet -->
+<rect x="72" y="170" width="26" height="10" rx="5" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<rect x="102" y="170" width="26" height="10" rx="5" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<!-- Shield (left hand) -->
+<ellipse cx="45" cy="122" rx="10" ry="12" fill="none" stroke="#00ff88" stroke-width="1.5" opacity=".5"/>
+</svg>
+</div>
+
+<h1>AWS Offensive Security</h1>
+<p class="subtitle">Advanced Red Team Curriculum — Master cloud attack techniques from reconnaissance to full organizational compromise across 21 modules and 95+ hands-on labs.</p>
+
+<div class="hero-stats">
+<div class="hero-stat"><span class="num" style="color:var(--cyan)">21</span><span class="label">Modules</span></div>
+<div class="hero-stat"><span class="num" style="color:var(--magenta)">95+</span><span class="label">Hands-on Labs</span></div>
+<div class="hero-stat"><span class="num" style="color:var(--green)">4</span><span class="label">Skill Tiers</span></div>
+<div class="hero-stat"><span class="num" style="color:var(--orange)">50+</span><span class="label">Tools Covered</span></div>
+</div>
+
+</div>
+</section>
+
+<!-- ==================== DECORATIVE ROBOTS ==================== -->
+<div id="robots-deco" aria-hidden="true">
+
+<div class="deco-robot deco-robot-1">
+<svg width="62" height="62" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="swordBlade-r2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="50%" stop-color="#00f0ff"/><stop offset="100%" stop-color="#00b4ff"/></linearGradient>
+<linearGradient id="bodyGrad-r2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1a2848"/><stop offset="100%" stop-color="#0f1428"/></linearGradient>
+<filter id="glow-r2"><feGaussianBlur stdDeviation="2" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<g transform="translate(135,30) rotate(35)"><rect x="-2" y="0" width="4" height="70" rx="1" fill="url(#swordBlade-r2)"/><rect x="-8" y="68" width="16" height="5" rx="2" fill="#00f0ff"/><rect x="-3" y="73" width="6" height="18" rx="2" fill="#1a2040"/><circle cx="0" cy="95" r="4" fill="#ff00aa"/></g>
+<line x1="100" y1="42" x2="100" y2="28" stroke="#00f0ff" stroke-width="2"/><circle cx="100" cy="25" r="4" fill="#00f0ff" filter="url(#glow-r2)"/>
+<rect x="72" y="44" width="56" height="40" rx="10" fill="url(#bodyGrad-r2)" stroke="#00f0ff" stroke-width="1.5"/>
+<circle cx="88" cy="62" r="7" fill="#0a0e1a"/><circle cx="88" cy="62" r="5" fill="#00f0ff" filter="url(#glow-r2)"/>
+<circle cx="112" cy="62" r="7" fill="#0a0e1a"/><circle cx="112" cy="62" r="5" fill="#ff00aa" filter="url(#glow-r2)"/>
+<rect x="90" y="72" width="20" height="3" rx="1.5" fill="#00ff88" opacity=".7"/>
+<rect x="94" y="84" width="12" height="8" rx="3" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<rect x="65" y="92" width="70" height="52" rx="12" fill="url(#bodyGrad-r2)" stroke="#00f0ff" stroke-width="1.5"/>
+<polygon points="100,100 110,112 100,124 90,112" fill="none" stroke="#ff00aa" stroke-width="1.5" filter="url(#glow-r2)"/><circle cx="100" cy="112" r="3" fill="#ff00aa"/>
+<rect x="42" y="96" width="20" height="12" rx="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1.2"/><rect x="38" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r2)" stroke="#00f0ff" stroke-width="1"/>
+<circle cx="45" cy="136" r="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<rect x="138" y="96" width="20" height="12" rx="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1.2"/><rect x="146" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r2)" stroke="#00f0ff" stroke-width="1"/>
+<circle cx="153" cy="136" r="6" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<rect x="76" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r2)" stroke="#00f0ff" stroke-width="1"/><rect x="106" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r2)" stroke="#00f0ff" stroke-width="1"/>
+<rect x="72" y="170" width="26" height="10" rx="5" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/><rect x="102" y="170" width="26" height="10" rx="5" fill="#1a2848" stroke="#00f0ff" stroke-width="1"/>
+<ellipse cx="45" cy="122" rx="10" ry="12" fill="none" stroke="#00ff88" stroke-width="1.5" opacity=".5"/>
+</svg>
+</div>
+
+<div class="deco-robot deco-robot-2">
+<svg width="56" height="56" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="swordBlade-r3" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="50%" stop-color="#ff00aa"/><stop offset="100%" stop-color="#ff44cc"/></linearGradient>
+<linearGradient id="bodyGrad-r3" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2a1840"/><stop offset="100%" stop-color="#150e28"/></linearGradient>
+<filter id="glow-r3"><feGaussianBlur stdDeviation="2" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<g transform="translate(135,30) rotate(35)"><rect x="-2" y="0" width="4" height="70" rx="1" fill="url(#swordBlade-r3)"/><rect x="-8" y="68" width="16" height="5" rx="2" fill="#ff00aa"/><rect x="-3" y="73" width="6" height="18" rx="2" fill="#1a2040"/><circle cx="0" cy="95" r="4" fill="#00f0ff"/></g>
+<line x1="100" y1="42" x2="100" y2="28" stroke="#ff00aa" stroke-width="2"/><circle cx="100" cy="25" r="4" fill="#ff00aa" filter="url(#glow-r3)"/>
+<rect x="72" y="44" width="56" height="40" rx="10" fill="url(#bodyGrad-r3)" stroke="#ff00aa" stroke-width="1.5"/>
+<circle cx="88" cy="62" r="7" fill="#0a0e1a"/><circle cx="88" cy="62" r="5" fill="#ff00aa" filter="url(#glow-r3)"/>
+<circle cx="112" cy="62" r="7" fill="#0a0e1a"/><circle cx="112" cy="62" r="5" fill="#00f0ff" filter="url(#glow-r3)"/>
+<rect x="90" y="72" width="20" height="3" rx="1.5" fill="#ff8800" opacity=".7"/>
+<rect x="94" y="84" width="12" height="8" rx="3" fill="#2a1840" stroke="#ff00aa" stroke-width="1"/>
+<rect x="65" y="92" width="70" height="52" rx="12" fill="url(#bodyGrad-r3)" stroke="#ff00aa" stroke-width="1.5"/>
+<polygon points="100,100 110,112 100,124 90,112" fill="none" stroke="#00f0ff" stroke-width="1.5" filter="url(#glow-r3)"/><circle cx="100" cy="112" r="3" fill="#00f0ff"/>
+<rect x="42" y="96" width="20" height="12" rx="6" fill="#2a1840" stroke="#ff00aa" stroke-width="1.2"/><rect x="38" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r3)" stroke="#ff00aa" stroke-width="1"/>
+<circle cx="45" cy="136" r="6" fill="#2a1840" stroke="#ff00aa" stroke-width="1"/>
+<rect x="138" y="96" width="20" height="12" rx="6" fill="#2a1840" stroke="#ff00aa" stroke-width="1.2"/><rect x="146" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r3)" stroke="#ff00aa" stroke-width="1"/>
+<circle cx="153" cy="136" r="6" fill="#2a1840" stroke="#ff00aa" stroke-width="1"/>
+<rect x="76" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r3)" stroke="#ff00aa" stroke-width="1"/><rect x="106" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r3)" stroke="#ff00aa" stroke-width="1"/>
+<rect x="72" y="170" width="26" height="10" rx="5" fill="#2a1840" stroke="#ff00aa" stroke-width="1"/><rect x="102" y="170" width="26" height="10" rx="5" fill="#2a1840" stroke="#ff00aa" stroke-width="1"/>
+<ellipse cx="45" cy="122" rx="10" ry="12" fill="none" stroke="#ff8800" stroke-width="1.5" opacity=".5"/>
+</svg>
+</div>
+
+<div class="deco-robot deco-robot-3">
+<svg width="66" height="66" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="swordBlade-r4" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="50%" stop-color="#00ff88"/><stop offset="100%" stop-color="#00cc66"/></linearGradient>
+<linearGradient id="bodyGrad-r4" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0f2a1a"/><stop offset="100%" stop-color="#0a1410"/></linearGradient>
+<filter id="glow-r4"><feGaussianBlur stdDeviation="2" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<g transform="translate(135,30) rotate(35)"><rect x="-2" y="0" width="4" height="70" rx="1" fill="url(#swordBlade-r4)"/><rect x="-8" y="68" width="16" height="5" rx="2" fill="#00ff88"/><rect x="-3" y="73" width="6" height="18" rx="2" fill="#1a2040"/><circle cx="0" cy="95" r="4" fill="#00ff88"/></g>
+<line x1="100" y1="42" x2="100" y2="28" stroke="#00ff88" stroke-width="2"/><circle cx="100" cy="25" r="4" fill="#00ff88" filter="url(#glow-r4)"/>
+<rect x="72" y="44" width="56" height="40" rx="10" fill="url(#bodyGrad-r4)" stroke="#00ff88" stroke-width="1.5"/>
+<circle cx="88" cy="62" r="7" fill="#0a0e1a"/><circle cx="88" cy="62" r="5" fill="#00ff88" filter="url(#glow-r4)"/>
+<circle cx="112" cy="62" r="7" fill="#0a0e1a"/><circle cx="112" cy="62" r="5" fill="#00f0ff" filter="url(#glow-r4)"/>
+<rect x="90" y="72" width="20" height="3" rx="1.5" fill="#00ff88" opacity=".7"/>
+<rect x="94" y="84" width="12" height="8" rx="3" fill="#0f2a1a" stroke="#00ff88" stroke-width="1"/>
+<rect x="65" y="92" width="70" height="52" rx="12" fill="url(#bodyGrad-r4)" stroke="#00ff88" stroke-width="1.5"/>
+<polygon points="100,100 110,112 100,124 90,112" fill="none" stroke="#00ff88" stroke-width="1.5" filter="url(#glow-r4)"/><circle cx="100" cy="112" r="3" fill="#00ff88"/>
+<rect x="42" y="96" width="20" height="12" rx="6" fill="#0f2a1a" stroke="#00ff88" stroke-width="1.2"/><rect x="38" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r4)" stroke="#00ff88" stroke-width="1"/>
+<circle cx="45" cy="136" r="6" fill="#0f2a1a" stroke="#00ff88" stroke-width="1"/>
+<rect x="138" y="96" width="20" height="12" rx="6" fill="#0f2a1a" stroke="#00ff88" stroke-width="1.2"/><rect x="146" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r4)" stroke="#00ff88" stroke-width="1"/>
+<circle cx="153" cy="136" r="6" fill="#0f2a1a" stroke="#00ff88" stroke-width="1"/>
+<rect x="76" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r4)" stroke="#00ff88" stroke-width="1"/><rect x="106" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r4)" stroke="#00ff88" stroke-width="1"/>
+<rect x="72" y="170" width="26" height="10" rx="5" fill="#0f2a1a" stroke="#00ff88" stroke-width="1"/><rect x="102" y="170" width="26" height="10" rx="5" fill="#0f2a1a" stroke="#00ff88" stroke-width="1"/>
+<ellipse cx="45" cy="122" rx="10" ry="12" fill="none" stroke="#00f0ff" stroke-width="1.5" opacity=".5"/>
+</svg>
+</div>
+
+<div class="deco-robot deco-robot-4">
+<svg width="56" height="56" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="swordBlade-r5" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="50%" stop-color="#ff8800"/><stop offset="100%" stop-color="#cc6600"/></linearGradient>
+<linearGradient id="bodyGrad-r5" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2a1800"/><stop offset="100%" stop-color="#150e00"/></linearGradient>
+<filter id="glow-r5"><feGaussianBlur stdDeviation="2" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<g transform="translate(135,30) rotate(35)"><rect x="-2" y="0" width="4" height="70" rx="1" fill="url(#swordBlade-r5)"/><rect x="-8" y="68" width="16" height="5" rx="2" fill="#ff8800"/><rect x="-3" y="73" width="6" height="18" rx="2" fill="#1a2040"/><circle cx="0" cy="95" r="4" fill="#ff8800"/></g>
+<line x1="100" y1="42" x2="100" y2="28" stroke="#ff8800" stroke-width="2"/><circle cx="100" cy="25" r="4" fill="#ff8800" filter="url(#glow-r5)"/>
+<rect x="72" y="44" width="56" height="40" rx="10" fill="url(#bodyGrad-r5)" stroke="#ff8800" stroke-width="1.5"/>
+<circle cx="88" cy="62" r="7" fill="#0a0e1a"/><circle cx="88" cy="62" r="5" fill="#ff8800" filter="url(#glow-r5)"/>
+<circle cx="112" cy="62" r="7" fill="#0a0e1a"/><circle cx="112" cy="62" r="5" fill="#ff00aa" filter="url(#glow-r5)"/>
+<rect x="90" y="72" width="20" height="3" rx="1.5" fill="#ff8800" opacity=".7"/>
+<rect x="94" y="84" width="12" height="8" rx="3" fill="#2a1800" stroke="#ff8800" stroke-width="1"/>
+<rect x="65" y="92" width="70" height="52" rx="12" fill="url(#bodyGrad-r5)" stroke="#ff8800" stroke-width="1.5"/>
+<polygon points="100,100 110,112 100,124 90,112" fill="none" stroke="#ff8800" stroke-width="1.5" filter="url(#glow-r5)"/><circle cx="100" cy="112" r="3" fill="#ff8800"/>
+<rect x="42" y="96" width="20" height="12" rx="6" fill="#2a1800" stroke="#ff8800" stroke-width="1.2"/><rect x="38" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r5)" stroke="#ff8800" stroke-width="1"/>
+<circle cx="45" cy="136" r="6" fill="#2a1800" stroke="#ff8800" stroke-width="1"/>
+<rect x="138" y="96" width="20" height="12" rx="6" fill="#2a1800" stroke="#ff8800" stroke-width="1.2"/><rect x="146" y="108" width="14" height="24" rx="5" fill="url(#bodyGrad-r5)" stroke="#ff8800" stroke-width="1"/>
+<circle cx="153" cy="136" r="6" fill="#2a1800" stroke="#ff8800" stroke-width="1"/>
+<rect x="76" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r5)" stroke="#ff8800" stroke-width="1"/><rect x="106" y="144" width="18" height="28" rx="6" fill="url(#bodyGrad-r5)" stroke="#ff8800" stroke-width="1"/>
+<rect x="72" y="170" width="26" height="10" rx="5" fill="#2a1800" stroke="#ff8800" stroke-width="1"/><rect x="102" y="170" width="26" height="10" rx="5" fill="#2a1800" stroke="#ff8800" stroke-width="1"/>
+<ellipse cx="45" cy="122" rx="10" ry="12" fill="none" stroke="#ff00aa" stroke-width="1.5" opacity=".5"/>
+</svg>
+</div>
+
+</div>
+
+<!-- ==================== TIER NAV ==================== -->
+<nav class="tier-nav" id="tierNav">
+<button class="tier-tab active" data-tier="all" onclick="filterTier('all',this)">All Modules</button>
+<button class="tier-tab" data-tier="beginner" onclick="filterTier('beginner',this)"><i class="fa-solid fa-seedling"></i> Beginner</button>
+<button class="tier-tab" data-tier="intermediate" onclick="filterTier('intermediate',this)"><i class="fa-solid fa-shield-halved"></i> Intermediate</button>
+<button class="tier-tab" data-tier="expert" onclick="filterTier('expert',this)"><i class="fa-solid fa-bolt"></i> Expert</button>
+<button class="tier-tab" data-tier="mahaguru" onclick="filterTier('mahaguru',this)"><i class="fa-solid fa-skull-crossbones"></i> Mahaguru</button>
+</nav>
+
+<!-- ==================== OVERVIEW ==================== -->
+<section class="overview">
+<div class="container">
+<h2 class="section-title">Course Tiers</h2>
+<p class="section-sub">Progressive skill-building from cloud enumeration to full kill-chain mastery</p>
+<div class="overview-grid">
+<div class="overview-card">
+<div class="ov-icon" style="color:var(--tier-beginner)"><i class="fa-solid fa-seedling"></i></div>
+<h3 style="color:var(--tier-beginner)">Tier 1 — Beginner</h3>
+<p>Modules 01-05 &middot; Reconnaissance, enumeration, and data extraction from core AWS services</p>
+</div>
+<div class="overview-card">
+<div class="ov-icon" style="color:var(--tier-intermediate)"><i class="fa-solid fa-shield-halved"></i></div>
+<h3 style="color:var(--tier-intermediate)">Tier 2 — Intermediate</h3>
+<p>Modules 06-10 &middot; Credential abuse, lateral movement, remote code execution, and data exfiltration</p>
+</div>
+<div class="overview-card">
+<div class="ov-icon" style="color:var(--tier-expert)"><i class="fa-solid fa-bolt"></i></div>
+<h3 style="color:var(--tier-expert)">Tier 3 — Expert</h3>
+<p>Modules 11-16 &middot; Identity Center abuse, container attacks, Kubernetes exploitation, privilege escalation</p>
+</div>
+<div class="overview-card">
+<div class="ov-icon" style="color:var(--tier-mahaguru)"><i class="fa-solid fa-skull-crossbones"></i></div>
+<h3 style="color:var(--tier-mahaguru)">Tier 4 — Mahaguru</h3>
+<p>Modules 17-21 &middot; CI/CD compromise, cross-account movement, persistence, evasion, full kill-chain</p>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ==================== SEARCH ==================== -->
+<section class="search-section">
+<div class="search-section-inner">
+<span class="search-section-label"><i class="fa-solid fa-magnifying-glass"></i> &nbsp;Search the Curriculum</span>
+<div class="search-wrap">
+<i class="fa-solid fa-magnifying-glass search-icon"></i>
+<input type="text" id="searchInput" placeholder="Search modules, labs, tools, or techniques..." aria-label="Search modules" autocomplete="off">
+<button class="search-clear" id="searchClear" aria-label="Clear search"><i class="fa-solid fa-xmark"></i></button>
+</div>
+<p class="search-hint">Try: <em>"S3"</em>, <em>"IAM escalation"</em>, <em>"Lambda"</em>, <em>"Kubernetes"</em>, <em>"Pacu"</em></p>
+</div>
+</section>
+
+<!-- ==================== MODULES ==================== -->
+<main class="container" id="modules">
+<div class="no-results" id="noResults"><i class="fa-solid fa-ghost"></i>No modules match your search.</div>
+
+<!-- ===== TIER 1 — BEGINNER ===== -->
+<section class="tier-section" id="tier-beginner" data-tier="beginner">
+<div class="tier-header"><span class="tier-badge beginner"><i class="fa-solid fa-seedling"></i> Beginner</span><h2 class="tier-title">Tier 1 — Foundations</h2></div>
+
+<!-- M01 -->
+<div class="module-card beginner" data-module="M01">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M01</span>
+<div class="module-info"><div class="module-title">Enumerating S3 Buckets</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M01-L01"><div class="lab-content"><span class="lab-text">Passive bucket discovery via DNS, cert transparency &amp; Google dorks</span><button class="lab-expand-btn" onclick="toggleLab(this,'M01-L01','beginner','m01-s3-buckets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M01-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M01-L02"><div class="lab-content"><span class="lab-text">Brute-forcing bucket names with S3Scanner &amp; bucket-finder</span><button class="lab-expand-btn" onclick="toggleLab(this,'M01-L02','beginner','m01-s3-buckets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M01-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M01-L03"><div class="lab-content"><span class="lab-text">Identifying ACL misconfigurations: public read, public write, ACL dump</span><button class="lab-expand-btn" onclick="toggleLab(this,'M01-L03','beginner','m01-s3-buckets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M01-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M01-L04"><div class="lab-content"><span class="lab-text">Extracting .env files, API keys and credentials from open buckets</span><button class="lab-expand-btn" onclick="toggleLab(this,'M01-L04','beginner','m01-s3-buckets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M01-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">s3scanner</span><span class="tool-tag">bucket-finder</span><span class="tool-tag">awscli</span><span class="tool-tag">grayhatwarfare</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> 2024 Mass .env Extraction Campaign</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M02 -->
+<div class="module-card beginner" data-module="M02">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M02</span>
+<div class="module-info"><div class="module-title">AWS Sub-Domain Takeover</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M02-L01"><div class="lab-content"><span class="lab-text">Identifying dangling DNS with subjack, nuclei &amp; dnsx</span><button class="lab-expand-btn" onclick="toggleLab(this,'M02-L01','beginner','m02-subdomain-takeover')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M02-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M02-L02"><div class="lab-content"><span class="lab-text">Claiming abandoned S3 buckets via sub-domain squatting</span><button class="lab-expand-btn" onclick="toggleLab(this,'M02-L02','beginner','m02-subdomain-takeover')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M02-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M02-L03"><div class="lab-content"><span class="lab-text">CloudFront distribution takeover technique</span><button class="lab-expand-btn" onclick="toggleLab(this,'M02-L03','beginner','m02-subdomain-takeover')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M02-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M02-L04"><div class="lab-content"><span class="lab-text">Hosted Zone hijack on Route 53 abandoned domains</span><button class="lab-expand-btn" onclick="toggleLab(this,'M02-L04','beginner','m02-subdomain-takeover')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M02-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">subjack</span><span class="tool-tag">nuclei</span><span class="tool-tag">dnsx</span><span class="tool-tag">amass</span><span class="tool-tag">subfinder</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Elastic Beanstalk &amp; S3 Sub-domain Takeovers</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M03 -->
+<div class="module-card beginner" data-module="M03">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M03</span>
+<div class="module-info"><div class="module-title">Enumerate AWS IAM Permissions &amp; Retrieve Secrets</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M03-L01"><div class="lab-content"><span class="lab-text">Stealthy IAM enumeration with Pacu, enumerate-iam, cloudfox</span><button class="lab-expand-btn" onclick="toggleLab(this,'M03-L01','beginner','m03-iam-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M03-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M03-L02"><div class="lab-content"><span class="lab-text">Using GetCallerIdentity, ListUsers, ListRoles for low-noise recon</span><button class="lab-expand-btn" onclick="toggleLab(this,'M03-L02','beginner','m03-iam-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M03-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M03-L03"><div class="lab-content"><span class="lab-text">Retrieving secrets via aws secretsmanager list-secrets &amp; get-secret-value</span><button class="lab-expand-btn" onclick="toggleLab(this,'M03-L03','beginner','m03-iam-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M03-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M03-L04"><div class="lab-content"><span class="lab-text">Reading SSM Parameter Store (SecureString) without KMS perms</span><button class="lab-expand-btn" onclick="toggleLab(this,'M03-L04','beginner','m03-iam-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M03-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">Pacu</span><span class="tool-tag">enumerate-iam</span><span class="tool-tag">cloudfox</span><span class="tool-tag">awscli</span><span class="tool-tag">trufflehog</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> SCARLETEEL (2023)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M04 -->
+<div class="module-card beginner" data-module="M04">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M04</span>
+<div class="module-info"><div class="module-title">Enumerate RDS and Get Access</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M04-L01"><div class="lab-content"><span class="lab-text">Discovering public RDS instances with describe-db-instances</span><button class="lab-expand-btn" onclick="toggleLab(this,'M04-L01','beginner','m04-rds-access')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M04-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M04-L02"><div class="lab-content"><span class="lab-text">Extracting RDS credentials from EC2 user-data &amp; SSM parameters</span><button class="lab-expand-btn" onclick="toggleLab(this,'M04-L02','beginner','m04-rds-access')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M04-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M04-L03"><div class="lab-content"><span class="lab-text">Connecting via RDS IAM authentication with a stolen token</span><button class="lab-expand-btn" onclick="toggleLab(this,'M04-L03','beginner','m04-rds-access')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M04-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M04-L04"><div class="lab-content"><span class="lab-text">RDS snapshot export &amp; plaintext extraction technique</span><button class="lab-expand-btn" onclick="toggleLab(this,'M04-L04','beginner','m04-rds-access')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M04-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">nmap</span><span class="tool-tag">mysql-client</span><span class="tool-tag">pg_dump</span><span class="tool-tag">RDSSnapper</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Capital One Breach (2019)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M05 -->
+<div class="module-card beginner" data-module="M05">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M05</span>
+<div class="module-info"><div class="module-title">Lambda Enumeration, API Gateway Abuse &amp; Env Var Exfiltration</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 5 labs</span><span><i class="fa-solid fa-wrench"></i> 4 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M05-L01"><div class="lab-content"><span class="lab-text">Lambda function enumeration — list functions, download code, grep for hardcoded secrets</span><button class="lab-expand-btn" onclick="toggleLab(this,'M05-L01','beginner','m05-lambda-api-gw')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M05-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M05-L02"><div class="lab-content"><span class="lab-text">API Gateway enumeration and authentication bypass — unauthenticated endpoint discovery</span><button class="lab-expand-btn" onclick="toggleLab(this,'M05-L02','beginner','m05-lambda-api-gw')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M05-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M05-L03"><div class="lab-content"><span class="lab-text">Lambda environment variable exfiltration — bulk dump and parse AWS keys, DB passwords, tokens</span><button class="lab-expand-btn" onclick="toggleLab(this,'M05-L03','beginner','m05-lambda-api-gw')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M05-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M05-L04"><div class="lab-content"><span class="lab-text">Lambda execution role abuse — enumerate overpermissive roles and invoke privileged actions</span><button class="lab-expand-btn" onclick="toggleLab(this,'M05-L04','beginner','m05-lambda-api-gw')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M05-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M05-L05"><div class="lab-content"><span class="lab-text">Sensitive data exposure via API GW + Lambda chain — IDOR, parameter tampering, data extraction</span><button class="lab-expand-btn" onclick="toggleLab(this,'M05-L05','beginner','m05-lambda-api-gw')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M05-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">curl</span><span class="tool-tag">Pacu</span><span class="tool-tag">jq</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> AMBERSQUID Lambda Cryptojacking (2023)</div></div>
+</div>
+</div></div>
+</div>
+</section>
+
+<!-- ===== TIER 2 — INTERMEDIATE ===== -->
+<section class="tier-section" id="tier-intermediate" data-tier="intermediate">
+<div class="tier-header"><span class="tier-badge intermediate"><i class="fa-solid fa-shield-halved"></i> Intermediate</span><h2 class="tier-title">Tier 2 — Exploitation</h2></div>
+
+<!-- M06 -->
+<div class="module-card intermediate" data-module="M06">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M06</span>
+<div class="module-info"><div class="module-title">Abuse IAM Roles, Instance Metadata &amp; SNS</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 4 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M06-L01"><div class="lab-content"><span class="lab-text">IMDS v1 exploitation: credential theft</span><button class="lab-expand-btn" onclick="toggleLab(this,'M06-L01','intermediate','m06-imds-sns')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M06-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M06-L02"><div class="lab-content"><span class="lab-text">IMDS v2 bypass and token-based exploitation techniques</span><button class="lab-expand-btn" onclick="toggleLab(this,'M06-L02','intermediate','m06-imds-sns')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M06-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M06-L03"><div class="lab-content"><span class="lab-text">IAM role assumption with stolen short-lived credentials</span><button class="lab-expand-btn" onclick="toggleLab(this,'M06-L03','intermediate','m06-imds-sns')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M06-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M06-L04"><div class="lab-content"><span class="lab-text">SNS topic enumeration &rarr; publish to trigger Lambda/SQS chains</span><button class="lab-expand-btn" onclick="toggleLab(this,'M06-L04','intermediate','m06-imds-sns')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M06-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M06-L05"><div class="lab-content"><span class="lab-text">Pivoting with cross-service chaining (EC2 &rarr; SNS &rarr; Lambda)</span><button class="lab-expand-btn" onclick="toggleLab(this,'M06-L05','intermediate','m06-imds-sns')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M06-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Pacu</span><span class="tool-tag">curl</span><span class="tool-tag">imds-toolkit</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Capital One SSRF Chain</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M07 -->
+<div class="module-card intermediate" data-module="M07">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M07</span>
+<div class="module-info"><div class="module-title">Capture Credentials from SNS Service</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M07-L01"><div class="lab-content"><span class="lab-text">Enumerating SNS topics and subscriptions with overpermissive keys</span><button class="lab-expand-btn" onclick="toggleLab(this,'M07-L01','intermediate','m07-sns-credentials')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M07-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M07-L02"><div class="lab-content"><span class="lab-text">Registering a rogue HTTPS endpoint as an SNS subscription</span><button class="lab-expand-btn" onclick="toggleLab(this,'M07-L02','intermediate','m07-sns-credentials')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M07-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M07-L03"><div class="lab-content"><span class="lab-text">Capturing plaintext Mailgun/SendGrid API keys from SNS message bodies</span><button class="lab-expand-btn" onclick="toggleLab(this,'M07-L03','intermediate','m07-sns-credentials')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M07-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M07-L04"><div class="lab-content"><span class="lab-text">Using harvested email credentials for follow-on phishing campaigns</span><button class="lab-expand-btn" onclick="toggleLab(this,'M07-L04','intermediate','m07-sns-credentials')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M07-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">ngrok</span><span class="tool-tag">Burp Suite</span><span class="tool-tag">requestbin</span><span class="tool-tag">custom Flask server</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> 2024 Mass-Breach Campaign</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M08 -->
+<div class="module-card intermediate" data-module="M08">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M08</span>
+<div class="module-info"><div class="module-title">Enumeration &amp; Command Execution via SSM</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 3 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M08-L01"><div class="lab-content"><span class="lab-text">Discovering SSM-managed instances with describe-instance-information</span><button class="lab-expand-btn" onclick="toggleLab(this,'M08-L01','intermediate','m08-ssm-execution')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M08-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M08-L02"><div class="lab-content"><span class="lab-text">Remote code execution via SSM SendCommand (AWS-RunShellScript)</span><button class="lab-expand-btn" onclick="toggleLab(this,'M08-L02','intermediate','m08-ssm-execution')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M08-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M08-L03"><div class="lab-content"><span class="lab-text">Abusing Session Manager for interactive shell without security group rules</span><button class="lab-expand-btn" onclick="toggleLab(this,'M08-L03','intermediate','m08-ssm-execution')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M08-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M08-L04"><div class="lab-content"><span class="lab-text">SSM Parameter Store enumeration for hardcoded DB passwords &amp; tokens</span><button class="lab-expand-btn" onclick="toggleLab(this,'M08-L04','intermediate','m08-ssm-execution')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M08-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Pacu</span><span class="tool-tag">ssm-session-manager-plugin</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Nation-State APT Persistence via SSM</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M09 -->
+<div class="module-card intermediate" data-module="M09">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M09</span>
+<div class="module-info"><div class="module-title">Get Remote Code Execution on a Lambda Function</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M09-L01"><div class="lab-content"><span class="lab-text">Discovering Lambda functions via ListFunctions and API Gateway mapping</span><button class="lab-expand-btn" onclick="toggleLab(this,'M09-L01','intermediate','m09-lambda-rce')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M09-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M09-L02"><div class="lab-content"><span class="lab-text">Code injection in Python/Node Lambda via unsafe eval/exec patterns</span><button class="lab-expand-btn" onclick="toggleLab(this,'M09-L02','intermediate','m09-lambda-rce')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M09-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M09-L03"><div class="lab-content"><span class="lab-text">Extracting /tmp, environment variables and execution role credentials</span><button class="lab-expand-btn" onclick="toggleLab(this,'M09-L03','intermediate','m09-lambda-rce')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M09-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M09-L04"><div class="lab-content"><span class="lab-text">Lambda layer poisoning — injecting malicious code into shared layers</span><button class="lab-expand-btn" onclick="toggleLab(this,'M09-L04','intermediate','m09-lambda-rce')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M09-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M09-L05"><div class="lab-content"><span class="lab-text">Reverse shell from Lambda via DNS callback</span><button class="lab-expand-btn" onclick="toggleLab(this,'M09-L05','intermediate','m09-lambda-rce')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M09-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Pacu</span><span class="tool-tag">lambda-shell</span><span class="tool-tag">Burp Suite</span><span class="tool-tag">custom payloads</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> AMBERSQUID (2023)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M10 -->
+<div class="module-card intermediate" data-module="M10">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M10</span>
+<div class="module-info"><div class="module-title">Dumping EBS Secrets</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M10-L01"><div class="lab-content"><span class="lab-text">Discovering public EBS snapshots via DescribeSnapshots</span><button class="lab-expand-btn" onclick="toggleLab(this,'M10-L01','intermediate','m10-ebs-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M10-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M10-L02"><div class="lab-content"><span class="lab-text">Cross-account snapshot copy &rarr; volume creation &rarr; attach to attacker EC2</span><button class="lab-expand-btn" onclick="toggleLab(this,'M10-L02','intermediate','m10-ebs-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M10-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M10-L03"><div class="lab-content"><span class="lab-text">Mounting volumes and extracting SSH keys, .aws/credentials, /etc/shadow</span><button class="lab-expand-btn" onclick="toggleLab(this,'M10-L03','intermediate','m10-ebs-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M10-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M10-L04"><div class="lab-content"><span class="lab-text">Automated EBS recon at scale with Dufflebag and EBSHunter</span><button class="lab-expand-btn" onclick="toggleLab(this,'M10-L04','intermediate','m10-ebs-secrets')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M10-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Dufflebag</span><span class="tool-tag">EBSHunter</span><span class="tool-tag">mount</span><span class="tool-tag">strings</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Public EBS Snapshot Exposure (2021-2024)</div></div>
+</div>
+</div></div>
+</div>
+</section>
+
+<!-- ===== TIER 3 — EXPERT ===== -->
+<section class="tier-section" id="tier-expert" data-tier="expert">
+<div class="tier-header"><span class="tier-badge expert"><i class="fa-solid fa-bolt"></i> Expert</span><h2 class="tier-title">Tier 3 — Advanced Exploitation</h2></div>
+
+<!-- M11 -->
+<div class="module-card expert" data-module="M11">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M11</span>
+<div class="module-info"><div class="module-title">Enumerate AWS IAM Identity Center Permissions</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 4 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M11-L01"><div class="lab-content"><span class="lab-text">Enumerating Identity Center instances, permission sets and assignments</span><button class="lab-expand-btn" onclick="toggleLab(this,'M11-L01','expert','m11-identity-center')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M11-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M11-L02"><div class="lab-content"><span class="lab-text">Mapping cross-account access paths using sso:ListAccountRoles</span><button class="lab-expand-btn" onclick="toggleLab(this,'M11-L02','expert','m11-identity-center')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M11-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M11-L03"><div class="lab-content"><span class="lab-text">Abusing permission set misconfigurations to assume admin in other accounts</span><button class="lab-expand-btn" onclick="toggleLab(this,'M11-L03','expert','m11-identity-center')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M11-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M11-L04"><div class="lab-content"><span class="lab-text">Persistent access via Identity Center — creating backdoor assignments</span><button class="lab-expand-btn" onclick="toggleLab(this,'M11-L04','expert','m11-identity-center')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M11-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Pacu</span><span class="tool-tag">cloudfox</span><span class="tool-tag">aws-sso-cli</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Over-Privileged Identity Center Findings</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M12 -->
+<div class="module-card expert" data-module="M12">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M12</span>
+<div class="module-info"><div class="module-title">AWS SSO Phishing Attack</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 4 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M12-L01"><div class="lab-content"><span class="lab-text">AWS Device Code phishing — generating malicious oauth/device/code flow</span><button class="lab-expand-btn" onclick="toggleLab(this,'M12-L01','expert','m12-sso-phishing')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M12-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M12-L02"><div class="lab-content"><span class="lab-text">Cloning IAM Identity Center login portal with Evilginx2</span><button class="lab-expand-btn" onclick="toggleLab(this,'M12-L02','expert','m12-sso-phishing')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M12-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M12-L03"><div class="lab-content"><span class="lab-text">Capturing OIDC tokens and refreshing long-lived SSO sessions</span><button class="lab-expand-btn" onclick="toggleLab(this,'M12-L03','expert','m12-sso-phishing')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M12-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M12-L04"><div class="lab-content"><span class="lab-text">Exploiting AWS CLI SSO login for token theft without browser interaction</span><button class="lab-expand-btn" onclick="toggleLab(this,'M12-L04','expert','m12-sso-phishing')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M12-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">Evilginx2</span><span class="tool-tag">GoPhish</span><span class="tool-tag">aws-sso-util</span><span class="tool-tag">custom Flask phishing server</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Device-Code Phishing Surge (2024)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M13 -->
+<div class="module-card expert" data-module="M13">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M13</span>
+<div class="module-info"><div class="module-title">Upload Malicious Image to ECR &amp; Container Supply Chain</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 6 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M13-L01"><div class="lab-content"><span class="lab-text">Discovering ECR repositories with ecr:DescribeRepositories</span><button class="lab-expand-btn" onclick="toggleLab(this,'M13-L01','expert','m13-ecr-supply-chain')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M13-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M13-L02"><div class="lab-content"><span class="lab-text">Poisoning a base image: adding reverse shell layer via Dockerfile</span><button class="lab-expand-btn" onclick="toggleLab(this,'M13-L02','expert','m13-ecr-supply-chain')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M13-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M13-L03"><div class="lab-content"><span class="lab-text">Pushing backdoored image and tagging as :latest for auto-deployment</span><button class="lab-expand-btn" onclick="toggleLab(this,'M13-L03','expert','m13-ecr-supply-chain')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M13-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M13-L04"><div class="lab-content"><span class="lab-text">Intercepting ECS task credentials via metadata endpoint</span><button class="lab-expand-btn" onclick="toggleLab(this,'M13-L04','expert','m13-ecr-supply-chain')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M13-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M13-L05"><div class="lab-content"><span class="lab-text">AMI name-confusion attack (whoAMI)</span><button class="lab-expand-btn" onclick="toggleLab(this,'M13-L05','expert','m13-ecr-supply-chain')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M13-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Docker</span><span class="tool-tag">Trivy</span><span class="tool-tag">Grype</span><span class="tool-tag">Terraform</span><span class="tool-tag">syft</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> whoAMI Attack (Feb 2025)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M14 -->
+<div class="module-card expert" data-module="M14">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M14</span>
+<div class="module-info"><div class="module-title">Utilising Docker to Gain Shell Access to Pod</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M14-L01"><div class="lab-content"><span class="lab-text">Container escape via privileged container with hostPID/hostNetwork</span><button class="lab-expand-btn" onclick="toggleLab(this,'M14-L01','expert','m14-docker-escape')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M14-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M14-L02"><div class="lab-content"><span class="lab-text">Docker socket abuse: mounting /var/run/docker.sock</span><button class="lab-expand-btn" onclick="toggleLab(this,'M14-L02','expert','m14-docker-escape')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M14-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M14-L03"><div class="lab-content"><span class="lab-text">hostPath volume escape — write to host filesystem and crontab persistence</span><button class="lab-expand-btn" onclick="toggleLab(this,'M14-L03','expert','m14-docker-escape')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M14-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M14-L04"><div class="lab-content"><span class="lab-text">Stealing Kubernetes service account tokens</span><button class="lab-expand-btn" onclick="toggleLab(this,'M14-L04','expert','m14-docker-escape')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M14-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M14-L05"><div class="lab-content"><span class="lab-text">EKS Pod Identity credential theft via packet sniffing</span><button class="lab-expand-btn" onclick="toggleLab(this,'M14-L05','expert','m14-docker-escape')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M14-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">kubectl</span><span class="tool-tag">docker</span><span class="tool-tag">crictl</span><span class="tool-tag">nsenter</span><span class="tool-tag">deepce</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Wiz Research (Jun 2025)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M15 -->
+<div class="module-card expert" data-module="M15">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M15</span>
+<div class="module-info"><div class="module-title">Kubernetes RBAC Abuse &amp; EKS Privilege Escalation</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M15-L01"><div class="lab-content"><span class="lab-text">RBAC enumeration with stolen service account token</span><button class="lab-expand-btn" onclick="toggleLab(this,'M15-L01','expert','m15-k8s-rbac')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M15-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M15-L02"><div class="lab-content"><span class="lab-text">Pod creation privilege escalation</span><button class="lab-expand-btn" onclick="toggleLab(this,'M15-L02','expert','m15-k8s-rbac')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M15-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M15-L03"><div class="lab-content"><span class="lab-text">DaemonSet taint abuse: force pod migration</span><button class="lab-expand-btn" onclick="toggleLab(this,'M15-L03','expert','m15-k8s-rbac')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M15-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M15-L04"><div class="lab-content"><span class="lab-text">IRSA token exchange: K8s service account &rarr; AWS STS &rarr; IAM role assumption</span><button class="lab-expand-btn" onclick="toggleLab(this,'M15-L04','expert','m15-k8s-rbac')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M15-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">kubectl</span><span class="tool-tag">rbac-police</span><span class="tool-tag">Peirates</span><span class="tool-tag">kube-hunter</span><span class="tool-tag">Pacu</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> SCARLETEEL v2 (2023)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M16 -->
+<div class="module-card expert" data-module="M16">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M16</span>
+<div class="module-info"><div class="module-title">IAM Privilege Escalation Attack Paths</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M16-L01"><div class="lab-content"><span class="lab-text">iam:PassRole + Lambda:CreateFunction &rarr; execute as privileged role</span><button class="lab-expand-btn" onclick="toggleLab(this,'M16-L01','expert','m16-iam-privesc')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M16-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M16-L02"><div class="lab-content"><span class="lab-text">iam:CreatePolicyVersion &rarr; overwrite with wildcard permissions</span><button class="lab-expand-btn" onclick="toggleLab(this,'M16-L02','expert','m16-iam-privesc')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M16-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M16-L03"><div class="lab-content"><span class="lab-text">sts:AssumeRole enumeration and cross-account role chaining</span><button class="lab-expand-btn" onclick="toggleLab(this,'M16-L03','expert','m16-iam-privesc')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M16-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M16-L04"><div class="lab-content"><span class="lab-text">Automated escalation path discovery with Cloudsplaining and PMapper</span><button class="lab-expand-btn" onclick="toggleLab(this,'M16-L04','expert','m16-iam-privesc')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M16-L04"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">Pacu</span><span class="tool-tag">cloudsplaining</span><span class="tool-tag">PMapper</span><span class="tool-tag">pmapper</span><span class="tool-tag">awscli</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Ermetic/Tenable Research</div></div>
+</div>
+</div></div>
+</div>
+</section>
+
+<!-- ===== TIER 4 — MAHAGURU ===== -->
+<section class="tier-section" id="tier-mahaguru" data-tier="mahaguru">
+<div class="tier-header"><span class="tier-badge mahaguru"><i class="fa-solid fa-skull-crossbones"></i> Mahaguru</span><h2 class="tier-title">Tier 4 — Mastery</h2></div>
+
+<!-- M17 -->
+<div class="module-card mahaguru" data-module="M17">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M17</span>
+<div class="module-info"><div class="module-title">CI/CD Pipeline Compromise &amp; Supply Chain Attack</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 6 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M17-L01"><div class="lab-content"><span class="lab-text">CodeBuild webhook ACTOR_ID regex bypass</span><button class="lab-expand-btn" onclick="toggleLab(this,'M17-L01','mahaguru','m17-cicd-compromise')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M17-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M17-L02"><div class="lab-content"><span class="lab-text">Process memory dump inside build environment to steal GitHub PATs</span><button class="lab-expand-btn" onclick="toggleLab(this,'M17-L02','mahaguru','m17-cicd-compromise')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M17-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M17-L03"><div class="lab-content"><span class="lab-text">CodePipeline poisoning — injecting malicious build steps</span><button class="lab-expand-btn" onclick="toggleLab(this,'M17-L03','mahaguru','m17-cicd-compromise')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M17-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M17-L04"><div class="lab-content"><span class="lab-text">GitHub Actions pull_request_target abuse for RCE</span><button class="lab-expand-btn" onclick="toggleLab(this,'M17-L04','mahaguru','m17-cicd-compromise')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M17-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M17-L05"><div class="lab-content"><span class="lab-text">Poisoning npm/PyPI packages via compromised CI bot accounts</span><button class="lab-expand-btn" onclick="toggleLab(this,'M17-L05','mahaguru','m17-cicd-compromise')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M17-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">gdb</span><span class="tool-tag">procdump</span><span class="tool-tag">custom GitHub App</span><span class="tool-tag">git</span><span class="tool-tag">gh-cli</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> CodeBreach (Jan 2026)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M18 -->
+<div class="module-card mahaguru" data-module="M18">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M18</span>
+<div class="module-info"><div class="module-title">Cross-Account Lateral Movement &amp; AWS Organizations Attack</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M18-L01"><div class="lab-content"><span class="lab-text">Cross-account trust enumeration: sts:AssumeRole across org</span><button class="lab-expand-btn" onclick="toggleLab(this,'M18-L01','mahaguru','m18-cross-account')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M18-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M18-L02"><div class="lab-content"><span class="lab-text">SCP bypass via delegate admin account</span><button class="lab-expand-btn" onclick="toggleLab(this,'M18-L02','mahaguru','m18-cross-account')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M18-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M18-L03"><div class="lab-content"><span class="lab-text">Abusing CloudFormation StackSets for cross-account code execution</span><button class="lab-expand-btn" onclick="toggleLab(this,'M18-L03','mahaguru','m18-cross-account')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M18-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M18-L04"><div class="lab-content"><span class="lab-text">Org-level SCP enumeration and abuse paths</span><button class="lab-expand-btn" onclick="toggleLab(this,'M18-L04','mahaguru','m18-cross-account')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M18-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M18-L05"><div class="lab-content"><span class="lab-text">Creating persistent shadow admin roles across multiple accounts</span><button class="lab-expand-btn" onclick="toggleLab(this,'M18-L05','mahaguru','m18-cross-account')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M18-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">Pacu</span><span class="tool-tag">awscli</span><span class="tool-tag">PMapper</span><span class="tool-tag">cloudmapper</span><span class="tool-tag">AWS Organizations API</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> SCARLETEEL 2.0 (2023)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M19 -->
+<div class="module-card mahaguru" data-module="M19">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M19</span>
+<div class="module-info"><div class="module-title">Advanced Persistence &amp; Evasion in AWS</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M19-L01"><div class="lab-content"><span class="lab-text">CloudTrail tampering: disabling logging, S3 bucket deletion</span><button class="lab-expand-btn" onclick="toggleLab(this,'M19-L01','mahaguru','m19-persistence-evasion')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M19-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M19-L02"><div class="lab-content"><span class="lab-text">GuardDuty suppression rules — creating allow-list rules as attacker</span><button class="lab-expand-btn" onclick="toggleLab(this,'M19-L02','mahaguru','m19-persistence-evasion')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M19-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M19-L03"><div class="lab-content"><span class="lab-text">Backdoor Lambda via layer injection</span><button class="lab-expand-btn" onclick="toggleLab(this,'M19-L03','mahaguru','m19-persistence-evasion')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M19-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M19-L04"><div class="lab-content"><span class="lab-text">EventBridge rule persistence</span><button class="lab-expand-btn" onclick="toggleLab(this,'M19-L04','mahaguru','m19-persistence-evasion')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M19-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M19-L05"><div class="lab-content"><span class="lab-text">S3 lifecycle deletion ransom attack</span><button class="lab-expand-btn" onclick="toggleLab(this,'M19-L05','mahaguru','m19-persistence-evasion')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M19-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Pacu</span><span class="tool-tag">CloudSploit</span><span class="tool-tag">custom Lambda backdoors</span><span class="tool-tag">Stratus Red Team</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> AWS CIRT TTP Catalog (Oct 2024)</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M20 -->
+<div class="module-card mahaguru" data-module="M20">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M20</span>
+<div class="module-info"><div class="module-title">Serverless &amp; Event-Driven Attack Chains</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 7 labs</span><span><i class="fa-solid fa-wrench"></i> 5 tools</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M20-L01"><div class="lab-content"><span class="lab-text">S3 event trigger poisoning</span><button class="lab-expand-btn" onclick="toggleLab(this,'M20-L01','mahaguru','m20-serverless-chains')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M20-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M20-L02"><div class="lab-content"><span class="lab-text">SQS message injection for downstream Lambda code execution</span><button class="lab-expand-btn" onclick="toggleLab(this,'M20-L02','mahaguru','m20-serverless-chains')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M20-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M20-L03"><div class="lab-content"><span class="lab-text">API Gateway request smuggling &rarr; Lambda RCE</span><button class="lab-expand-btn" onclick="toggleLab(this,'M20-L03','mahaguru','m20-serverless-chains')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M20-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M20-L04"><div class="lab-content"><span class="lab-text">Step Functions state machine manipulation</span><button class="lab-expand-btn" onclick="toggleLab(this,'M20-L04','mahaguru','m20-serverless-chains')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M20-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M20-L05"><div class="lab-content"><span class="lab-text">Recursive Lambda scan pattern</span><button class="lab-expand-btn" onclick="toggleLab(this,'M20-L05','mahaguru','m20-serverless-chains')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M20-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Tools</h4><span class="tool-tag">awscli</span><span class="tool-tag">Pacu</span><span class="tool-tag">Burp Suite</span><span class="tool-tag">Stratus Red Team</span><span class="tool-tag">custom Lambda payloads</span></div>
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> 2024 Serverless Cryptojacking Campaign</div></div>
+</div>
+</div></div>
+</div>
+
+<!-- M21 -->
+<div class="module-card mahaguru" data-module="M21">
+<div class="module-header" onclick="toggleModule(this)">
+<span class="module-num">M21</span>
+<div class="module-info"><div class="module-title">Full Kill-Chain Capstone: External Recon to Org Admin</div><div class="module-meta"><span><i class="fa-solid fa-flask"></i> 6 labs</span><span><i class="fa-solid fa-wrench"></i> Comprehensive</span></div></div>
+<div class="module-progress"><div class="module-progress-fill" style="width:0%"></div></div>
+<span class="module-toggle"><i class="fa-solid fa-chevron-down"></i></span>
+</div>
+<div class="module-body"><div class="module-body-inner">
+<ul class="lab-list">
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M21-L01"><div class="lab-content"><span class="lab-text">Path A: Open S3 &rarr; .env &rarr; Lambda &rarr; IAM escalation &rarr; Org admin</span><button class="lab-expand-btn" onclick="toggleLab(this,'M21-L01','mahaguru','m21-capstone')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M21-L01"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M21-L02"><div class="lab-content"><span class="lab-text">Path B: Sub-domain takeover &rarr; SSO clone &rarr; device-code phish &rarr; Identity Center</span><button class="lab-expand-btn" onclick="toggleLab(this,'M21-L02','mahaguru','m21-capstone')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M21-L02"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M21-L03"><div class="lab-content"><span class="lab-text">Path C: ECR poison &rarr; EKS deploy &rarr; container escape &rarr; IRSA &rarr; cross-account</span><button class="lab-expand-btn" onclick="toggleLab(this,'M21-L03','mahaguru','m21-capstone')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M21-L03"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M21-L04"><div class="lab-content"><span class="lab-text">Path D: CodeBuild bypass &rarr; CI memory dump &rarr; GitHub admin &rarr; SDK backdoor</span><button class="lab-expand-btn" onclick="toggleLab(this,'M21-L04','mahaguru','m21-capstone')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M21-L04"></div></div></li>
+<li class="lab-item"><input type="checkbox" class="lab-check" data-lab="M21-L05"><div class="lab-content"><span class="lab-text">Deliverables: Written attack narrative, screenshots, remediation recs, MITRE mapping</span><button class="lab-expand-btn" onclick="toggleLab(this,'M21-L05','mahaguru','m21-capstone')"><i class="fa-solid fa-book-open"></i> Walkthrough <i class="fa-solid fa-chevron-down lab-arrow"></i></button><div class="lab-walkthrough" id="wt-M21-L05"></div></div></li>
+</ul>
+<div class="module-footer">
+<div class="module-footer-section"><h4>Real-World Case</h4><div class="rw-tag"><i class="fa-solid fa-triangle-exclamation"></i> Composite of SCARLETEEL, AMBERSQUID, CodeBreach, 2024 .env campaign</div></div>
+</div>
+</div></div>
+</div>
+</section>
+</main>
+
+<!-- ==================== MITRE ATT&CK ==================== -->
+<section class="container" style="padding:3rem 1.25rem" id="mitre">
+<h2 class="section-title">MITRE ATT&CK Cloud Matrix Coverage</h2>
+<p class="section-sub">This curriculum maps to the following MITRE ATT&CK for Cloud tactics</p>
+<div class="mitre-grid">
+<div class="mitre-card"><h3><i class="fa-solid fa-crosshairs"></i> Reconnaissance</h3><p>M01, M02, M03, M04, M05 — Passive and active enumeration of cloud resources, DNS, and IAM</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-key"></i> Initial Access</h3><p>M01, M02, M12, M13 — Exposed credentials, sub-domain takeover, SSO phishing, supply chain</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-terminal"></i> Execution</h3><p>M08, M09, M14, M17, M20 — SSM command execution, Lambda injection, container escape, CI/CD</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-ghost"></i> Persistence</h3><p>M11, M17, M19 — IAM backdoors, Lambda layer injection, EventBridge rules, CloudTrail evasion</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-arrow-up-right-dots"></i> Privilege Escalation</h3><p>M06, M15, M16, M18 — IAM role abuse, RBAC exploitation, cross-account chaining, PassRole</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-eye-slash"></i> Defense Evasion</h3><p>M19 — CloudTrail tampering, GuardDuty suppression, logging deletion</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-user-secret"></i> Credential Access</h3><p>M03, M06, M07, M10, M12, M14 — IMDS theft, secrets manager, SNS capture, EBS extraction</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-magnifying-glass"></i> Discovery</h3><p>M03, M04, M05, M08, M11 — IAM enum, RDS discovery, DynamoDB scan, SSM instance info</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-right-left"></i> Lateral Movement</h3><p>M06, M15, M18 — Cross-service chaining, IRSA token exchange, cross-account AssumeRole</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-database"></i> Collection &amp; Exfiltration</h3><p>M04, M05, M10 — RDS snapshot export, DynamoDB scan dump, EBS volume extraction</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-explosion"></i> Impact</h3><p>M19, M20 — S3 lifecycle ransom, recursive Lambda abuse, serverless cryptojacking</p></div>
+<div class="mitre-card"><h3><i class="fa-solid fa-route"></i> Full Kill Chain</h3><p>M21 — End-to-end attack paths combining all tactics from recon to organizational compromise</p></div>
+</div>
+</section>
+
+<!-- ==================== TOOLS REFERENCE ==================== -->
+<section class="container" style="padding:0 1.25rem 3rem" id="tools">
+<h2 class="section-title">Tools Arsenal</h2>
+<p class="section-sub">Core offensive security tools used throughout the curriculum</p>
+<div class="tools-grid">
+<div class="tool-card"><h3><i class="fa-solid fa-terminal"></i> Pacu</h3><p>AWS exploitation framework. Used in M03, M05, M06, M08, M09, M15, M16, M18, M19, M20</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-cloud"></i> AWS CLI</h3><p>Primary interface for all AWS service enumeration and exploitation across every module</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-fox"></i> CloudFox</h3><p>Cloud penetration testing tool for finding exploitable paths. Used in M03, M11</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-bucket"></i> S3Scanner</h3><p>Automated S3 bucket discovery and permission enumeration. Used in M01</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-atom"></i> Nuclei</h3><p>Vulnerability scanner with cloud-specific templates. Used in M02</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-fish"></i> Evilginx2</h3><p>Advanced phishing framework for MitM credential capture. Used in M12</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-cube"></i> Docker / kubectl</h3><p>Container runtime and Kubernetes CLI for container and cluster attacks. Used in M13, M14, M15</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-map"></i> PMapper</h3><p>AWS IAM policy evaluation and privilege escalation path mapping. Used in M16, M18</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-shield-virus"></i> Stratus Red Team</h3><p>Adversary emulation tool for cloud. Used in M19, M20</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-spider"></i> Burp Suite</h3><p>Web application security testing. Used in M07, M09, M20</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-hard-drive"></i> Dufflebag</h3><p>Search through public EBS snapshots for secrets and credentials. Used in M10</p></div>
+<div class="tool-card"><h3><i class="fa-solid fa-bug"></i> TruffleHog</h3><p>Secrets scanning in code repositories and cloud resources. Used in M03</p></div>
+</div>
+</section>
+
+<!-- ==================== FOOTER ==================== -->
+<footer>
+<div class="footer-brand">AWS Offensive Security</div>
+<p>Advanced Red Team Curriculum &middot; 21 Modules &middot; 95+ Hands-on Labs</p>
+<p style="margin-top:.8rem;font-size:.75rem;color:var(--text-dim)">For authorized security testing and education only. Always obtain proper authorization before testing.</p>
+</footer>
+
+<!-- ==================== SCROLL TO TOP ==================== -->
+<button class="scroll-top" id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Scroll to top"><i class="fa-solid fa-chevron-up"></i></button>
+
+<script>
+/* ===== Module expand/collapse ===== */
+function toggleModule(header){
+  const card=header.parentElement;
+  const body=card.querySelector('.module-body');
+  const inner=body.querySelector('.module-body-inner');
+  if(card.classList.contains('open')){
+    body.style.maxHeight='0';card.classList.remove('open');
+  }else{
+    body.style.maxHeight=inner.scrollHeight+'px';card.classList.add('open');
+  }
+}
+
+/* ===== Tier filtering ===== */
+function filterTier(tier,btn){
+  document.querySelectorAll('.tier-tab').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+  const sections=document.querySelectorAll('.tier-section');
+  if(tier==='all'){sections.forEach(s=>s.style.display='');}
+  else{sections.forEach(s=>{s.style.display=s.dataset.tier===tier?'':'none';});}
+  document.getElementById('noResults').style.display='none';
+}
+
+/* ===== Search ===== */
+const searchInput=document.getElementById('searchInput');
+const searchClear=document.getElementById('searchClear');
+
+function runSearch(q){
+  q=q.toLowerCase().trim();
+  const cards=document.querySelectorAll('.module-card');
+  const sections=document.querySelectorAll('.tier-section');
+  /* Reset tier tabs to "all" */
+  document.querySelectorAll('.tier-tab').forEach(t=>t.classList.remove('active'));
+  const allTab=document.querySelector('.tier-tab[data-tier="all"]');
+  if(allTab)allTab.classList.add('active');
+  /* Show all sections first */
+  sections.forEach(s=>{s.style.display='';s.classList.remove('search-hidden');});
+  /* Show/hide cards */
+  let anyVisible=false;
+  cards.forEach(function(card){
+    const text=card.textContent.toLowerCase();
+    const match=!q||text.includes(q);
+    if(match){
+      card.style.display='';
+      card.classList.remove('search-hidden');
+      anyVisible=true;
+    }else{
+      card.style.display='none';
+      card.classList.add('search-hidden');
+    }
+  });
+  /* Hide sections with no matching cards */
+  sections.forEach(function(s){
+    const hasVisible=Array.from(s.querySelectorAll('.module-card')).some(function(c){return !c.classList.contains('search-hidden');});
+    s.style.display=hasVisible?'':'none';
+  });
+  /* No-results message */
+  const noResults=document.getElementById('noResults');
+  if(noResults)noResults.style.display=anyVisible||!q?'none':'block';
+  /* Clear button visibility */
+  if(searchClear)searchClear.classList.toggle('visible',q.length>0);
+}
+
+searchInput.addEventListener('input',function(){runSearch(this.value);});
+if(searchClear){
+  searchClear.addEventListener('click',function(){
+    searchInput.value='';
+    runSearch('');
+    searchInput.focus();
+  });
+}
+
+/* ===== Lab checkboxes with localStorage ===== */
+const STORAGE_KEY='aws-offsec-labs';
+function loadProgress(){
+  try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||{};}catch(e){return {};}
+}
+function saveProgress(data){
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(data));}catch(e){}
+}
+function updateModuleProgress(card){
+  const checks=card.querySelectorAll('.lab-check');
+  const checked=card.querySelectorAll('.lab-check:checked');
+  const pct=checks.length?(checked.length/checks.length)*100:0;
+  const fill=card.querySelector('.module-progress-fill');
+  if(fill)fill.style.width=pct+'%';
+}
+
+/* Initialize checkboxes */
+const progress=loadProgress();
+document.querySelectorAll('.lab-check').forEach(cb=>{
+  const id=cb.dataset.lab;
+  if(progress[id])cb.checked=true;
+  cb.addEventListener('change',function(){
+    const p=loadProgress();
+    if(this.checked)p[id]=true;else delete p[id];
+    saveProgress(p);
+    updateModuleProgress(this.closest('.module-card'));
+  });
+});
+/* Set initial progress bars */
+document.querySelectorAll('.module-card').forEach(updateModuleProgress);
+
+/* ===== Scroll to top button ===== */
+const scrollBtn=document.getElementById('scrollTop');
+window.addEventListener('scroll',function(){
+  scrollBtn.classList.toggle('visible',window.scrollY>600);
+},{passive:true});
+
+/* ===== Smooth scroll for tier nav on page load with hash ===== */
+if(location.hash){
+  const el=document.querySelector(location.hash);
+  if(el)setTimeout(()=>el.scrollIntoView({behavior:'smooth'}),300);
+}
+
+/* ===== Lab Walkthrough Toggle & Fetch ===== */
+const labCache={};
+async function toggleLab(btn,labId,tier,filename){
+  const wt=document.getElementById('wt-'+labId);
+  if(!wt)return;
+  if(wt.classList.contains('open')){
+    wt.classList.remove('open');wt.style.maxHeight='0';btn.classList.remove('open');
+    const mb=wt.closest('.module-body');
+    if(mb){const inner=mb.querySelector('.module-body-inner');if(inner)mb.style.maxHeight=inner.scrollHeight+'px';}
+    return;
+  }
+  btn.classList.add('open');
+  if(!wt.firstElementChild){
+    const loader=document.createElement('div');loader.className='lab-loading';
+    loader.textContent='Loading walkthrough...';wt.appendChild(loader);
+    wt.classList.add('open');wt.style.maxHeight='none';
+    const ck=tier+'/'+filename;
+    try{
+      if(!labCache[ck]){
+        const r=await fetch('labs/'+tier+'/'+filename+'.html');
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        labCache[ck]=await r.text();
+      }
+      const p=new DOMParser();
+      const d=p.parseFromString('<div>'+labCache[ck]+'</div>','text/html');
+      const c=d.getElementById(labId+'-content');
+      wt.textContent='';
+      if(c){wt.appendChild(document.adoptNode(c));}
+      else{const n=document.createElement('div');n.className='lab-note';n.textContent='Walkthrough content not found for '+labId+'.';wt.appendChild(n);}
+    }catch(e){
+      wt.textContent='';
+      const n=document.createElement('div');n.className='lab-note';n.textContent='Could not load walkthrough. Serve via HTTP server (not file://). Error: '+e.message;wt.appendChild(n);
+    }
+  }
+  wt.classList.add('open');wt.style.maxHeight='none';
+  const mb=wt.closest('.module-body');
+  if(mb){const inner=mb.querySelector('.module-body-inner');if(inner){mb.style.maxHeight=inner.scrollHeight+'px';requestAnimationFrame(()=>{mb.style.maxHeight=inner.scrollHeight+'px';});}}
+}
+
+</script>
+</body>
+</html>
